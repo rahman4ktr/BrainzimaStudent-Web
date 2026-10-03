@@ -1,7 +1,14 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  async rewrites() {
+    return [
+      {
+        source: "/public/uploads/:path*",
+        destination: "/uploads/:path*",
+      },
+    ];
+  },
 };
 
 export default nextConfig;

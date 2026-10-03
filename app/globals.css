@@ -1,26 +1,71 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --primary: #5B21F4;
+  --primary-dark: #32118F;
+
+  --success: #08A66A;
+  --success-dark: #078957;
+
+  --blue: #2563EB;
+
+  --background: #F8FAFC;
+  --foreground: #111827;
+
+  --muted: #475569;
+  --muted-light: #94A3B8;
+
+  --border: #E2E8F0;
+  --card: #FFFFFF;
+
+  --purple-soft: #F1EEFF;
+  --green-soft: #ECFDF5;
+  --blue-soft: #EFF6FF;
+
+  --error: #EF4444;
+  --warning: #F59E0B;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@theme {
+  --color-primary: #5B21F4;
+  --color-primary-dark: #32118F;
+  --color-success: #08A66A;
+  --color-success-dark: #078957;
+  --color-blue: #2563EB;
+  --color-purple-soft: #F1EEFF;
+  --color-green-soft: #ECFDF5;
+  --color-blue-soft: #EFF6FF;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: #F8FAFC;
+  color: #111827;
+}
+
+/* Safe area for mobile bottom nav */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
 }
