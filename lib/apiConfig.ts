@@ -2,14 +2,14 @@
 // Production-safe API URL configuration and SSL sanitizer.
 // Guarantees all requests to backend API use HTTPS to prevent Mixed Content blocking.
 
+import { APP_CONFIG } from "./config";
+
 /**
  * Returns the sanitized backend API URL.
  * Automatically strips accidental quotes, trailing slashes, and upgrades HTTP to HTTPS.
  */
 export function getBackendApiUrl(): string {
-  const raw =
-    process.env.NEXT_PUBLIC_API_URL ||
-    "https://try.ajitdev.com/brainzima/student/api";
+  const raw = APP_CONFIG.apiUrl || "https://try.ajitdev.com/brainzima/student/api";
 
   let url = raw.replace(/^["']|["']$/g, "").trim();
 

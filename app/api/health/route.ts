@@ -58,12 +58,24 @@ export async function GET() {
     mode: rzp.mode,
     isTestMode: rzp.isTestMode,
     isLiveMode: rzp.isLiveMode,
+    razorpayKeyIdConfigured: Boolean(rzp.key_id),
+    razorpaySecretConfigured: Boolean(rzp.key_secret),
     keyIdConfigured: Boolean(rzp.key_id),
     keyIdPrefix: rzp.key_id ? rzp.key_id.slice(0, 8) + "..." : null,
     secretConfigured: Boolean(rzp.key_secret),
-    secretLength: rzp.key_secret ? rzp.key_secret.length : 0,
     hasQuotesInKeyId: (process.env.RAZORPAY_KEY_ID || "").startsWith('"'),
     hasQuotesInSecret: (process.env.RAZORPAY_KEY_SECRET || "").startsWith('"'),
+  };
+
+  // Section 16: Safe server/client configuration check
+  const publicConfig = {
+    apiConfigured: Boolean(apiUrl),
+    razorpayPublicKeyConfigured: Boolean(process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID),
+  };
+
+  const serverConfig = {
+    razorpayKeyIdConfigured: Boolean(rzp.key_id),
+    razorpaySecretConfigured: Boolean(rzp.key_secret),
   };
 
   // ── 3. SMTP Configuration & Connectivity Audit ─────────────────────────────
@@ -121,6 +133,8 @@ export async function GET() {
         httpStatus: apiStatus,
         latencyMs: apiPingMs,
       },
+      publicConfig,
+      serverConfig,
       razorpay: razorpayAudit,
       smtp: smtpAudit,
       guidance: {
