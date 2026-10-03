@@ -473,6 +473,14 @@ export default function StudentFeesPage() {
 
       if (!orderRes.success || !orderRes.data?.order_id) {
         const status = orderRes._status;
+        const stage = (orderRes as any).stage || (status === 0 ? "NETWORK" : "ORDER_CREATE");
+        const stageTitle =
+          stage === "NETWORK"
+            ? "Network Connection Error"
+            : stage === "ORDER_CREATE"
+            ? "Order Creation Failed"
+            : "Payment Gateway Error";
+
         const msg = getHttpErrorMessage(
           status,
           orderRes.message || "Payment could not be completed. Please try again.",
@@ -480,7 +488,7 @@ export default function StudentFeesPage() {
         );
         toast({
           variant: "error",
-          title: "Payment Gateway Error",
+          title: stageTitle,
           description: msg,
         });
         setIsProcessingPayment(false);
@@ -617,9 +625,10 @@ export default function StudentFeesPage() {
         setIsProcessingPayment(false);
         const errMsg =
           failResponse?.error?.description || "Payment could not be completed. Please try again.";
+        console.error("[Razorpay Stage: CHECKOUT] Payment failed:", failResponse?.error);
         toast({
           variant: "error",
-          title: "Payment Failed",
+          title: "Payment Checkout Failed",
           description: errMsg,
         });
       });

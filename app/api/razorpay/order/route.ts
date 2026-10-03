@@ -15,10 +15,20 @@ export async function POST(req: NextRequest) {
 
     const config = getCleanRazorpayConfig();
 
+    // Section 6: Safe server-side diagnostic (never logs secrets)
+    console.log("[Razorpay Config Diagnostic]", {
+      "RAZORPAY_KEY_ID configured": Boolean(config.key_id),
+      "RAZORPAY_KEY_SECRET configured": Boolean(config.key_secret),
+      environment: process.env.NODE_ENV || "production",
+      mode: config.mode,
+    });
+
     if (!config.configured) {
       console.error("[Razorpay Order Stage: ORDER_CREATE] Missing Razorpay credentials in environment:", {
-        hasKeyId: Boolean(config.key_id),
-        hasSecret: Boolean(config.key_secret),
+        "RAZORPAY_KEY_ID configured": Boolean(config.key_id),
+        "RAZORPAY_KEY_SECRET configured": Boolean(config.key_secret),
+        environment: process.env.NODE_ENV || "production",
+        mode: config.mode,
       });
       return NextResponse.json(
         {

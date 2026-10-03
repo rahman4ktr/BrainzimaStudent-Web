@@ -327,6 +327,16 @@ export async function sendOtpEmail(params: {
 }): Promise<void> {
   const config = getCleanSmtpConfig();
 
+  // Section 15: Safe server-side diagnostics (never log password, OTP, or token)
+  console.log("[SMTP Diagnostic]", {
+    "SMTP host configured": Boolean(config.host),
+    "SMTP port": config.port,
+    "SMTP username configured": Boolean(config.user),
+    "SMTP connection result": config.configured ? "credentials_present" : "credentials_missing",
+    "error code": config.configured ? null : "ECONFIG",
+    "error message": config.configured ? null : "SMTP credentials missing in environment",
+  });
+
   // 1. Immediate validation with clear error if environment variables are missing
   if (!config.configured) {
     const missingKeys: string[] = [];
