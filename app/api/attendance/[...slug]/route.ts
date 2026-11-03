@@ -7,8 +7,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const PHP_API =
-  process.env.NEXT_PUBLIC_API_URL ||
-  "https://try.ajitdev.com/brainzima/student/api";
+  process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_URL ||
+  "https://api.brainzima.com/student/api";
 
 export async function GET(
   req: NextRequest,

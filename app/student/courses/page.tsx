@@ -14,15 +14,23 @@ import {
   AlertCircle,
   GraduationCap,
   Compass,
+  PlayCircle,
+  Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 import { useStudent } from "@/hooks/useStudent";
 import {
-  getStudentEnrollments,
+  getCurrentStudent,
+  getStudentOnlineCourses,
   getCourses,
+  getOnlineCourses,
   EnrollmentItem,
+  OnlineEnrolledCourse,
   Course,
+  OnlineCourse,
 } from "@/lib/api";
+import { getCourseImageUrl } from "@/lib/session";
+import CourseThumbnail from "@/components/courses/CourseThumbnail";
 import { useEnrollmentRoute } from "@/hooks/useEnrollmentRoute";
 import {
   Card,
@@ -208,35 +216,90 @@ export default function StudentCoursesPage() {
 
   // State 1: Enrolled Courses
   const [enrollments, setEnrollments] = useState<EnrollmentItem[]>([]);
+  const [onlineCourses, setOnlineCourses] = useState<OnlineEnrolledCourse[]>([]);
+  const [catalogMap, setCatalogMap] = useState<Map<number, Course>>(new Map());
+  const [onlineCatalogMap, setOnlineCatalogMap] = useState<Map<number, OnlineCourse>>(new Map());
+  const [coursesTab, setCoursesTab] = useState<"enrolled" | "offline" | "online">("enrolled");
   const [isEnrLoading, setIsEnrLoading] = useState(true);
   const [enrError, setEnrError] = useState<string | null>(null);
 
-  // State 2: Complete Course Catalog
-  const [allCourses, setAllCourses] = useState<Course[]>([]);
-  const [isCatalogLoading, setIsCatalogLoading] = useState(true);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-
-  // Search state across both sections
+  // Search state across enrolled courses
   const [search, setSearch] = useState("");
 
   // ── Fetch Enrolled Courses independently ──
+  // STRICT RULE:
+  //   - OFFLINE courses come ONLY from offline_courses in /api/student/me
+  //   - ONLINE courses come ONLY from online_courses in /api/student/me + /api/onlinecoures/enrolled
+  //   - NEVER resolve online course through offline catalog
+  //   - If offline_courses = [], show ZERO offline cards
   const loadEnrollments = useCallback(async () => {
     if (!user_id) return;
     setIsEnrLoading(true);
     setEnrError(null);
 
     try {
-      const res = await getStudentEnrollments(user_id);
-      if (res.success && res.data) {
-        let list: EnrollmentItem[] = [];
-        if (Array.isArray(res.data)) {
-          list = res.data;
-        } else if ("enrollments" in res.data && Array.isArray((res.data as any).enrollments)) {
-          list = (res.data as any).enrollments;
+      const [stMeRes, onlRes, catRes, onlCatRes] = await Promise.allSettled([
+        getCurrentStudent(user_id),
+        getStudentOnlineCourses(user_id, "student"),
+        getCourses(),
+        getOnlineCourses(),
+      ]);
+
+      // Cache catalog image lookups
+      if (catRes.status === "fulfilled" && catRes.value?.success && Array.isArray(catRes.value.data)) {
+        const cMap = new Map<number, Course>();
+        catRes.value.data.forEach((c) => cMap.set(Number(c.course_id), c));
+        setCatalogMap(cMap);
+      }
+
+      if (onlCatRes.status === "fulfilled" && onlCatRes.value?.success && Array.isArray(onlCatRes.value.data)) {
+        const oMap = new Map<number, OnlineCourse>();
+        onlCatRes.value.data.forEach((c) => oMap.set(Number(c.course_id), c));
+        setOnlineCatalogMap(oMap);
+      }
+
+      // --- OFFLINE COURSES: STRICTLY from offline_courses ---
+      let offlineList: EnrollmentItem[] = [];
+      if (stMeRes.status === "fulfilled" && stMeRes.value?.success && stMeRes.value?.data) {
+        const pData = stMeRes.value.data;
+        if (Array.isArray(pData.offline_courses)) {
+          offlineList = pData.offline_courses.map((c: any) => ({
+            ...c,
+            course_format: "offline" as const,
+          }));
         }
-        setEnrollments(list);
-      } else {
-        setEnrError(res.message || "Unable to load your enrolled courses.");
+      }
+      setEnrollments(offlineList);
+
+      // --- ONLINE COURSES: STRICTLY from online_courses + /api/onlinecoures/enrolled ---
+      const onlineMap = new Map<string, OnlineEnrolledCourse>();
+      if (stMeRes.status === "fulfilled" && stMeRes.value?.success && Array.isArray(stMeRes.value?.data?.online_courses)) {
+        (stMeRes.value.data.online_courses as OnlineEnrolledCourse[]).forEach((c) => {
+          onlineMap.set(`online:${c.course_id}`, {
+            ...c,
+            course_format: "online" as const,
+          });
+        });
+      }
+      if (onlRes.status === "fulfilled" && onlRes.value?.success && Array.isArray(onlRes.value?.data)) {
+        (onlRes.value.data as OnlineEnrolledCourse[]).forEach((c) => {
+          const key = `online:${c.course_id}`;
+          onlineMap.set(key, {
+            ...(onlineMap.get(key) || {}),
+            ...c,
+            course_format: "online" as const,
+          });
+        });
+      }
+      setOnlineCourses(Array.from(onlineMap.values()));
+
+      if (
+        stMeRes.status === "fulfilled" &&
+        !stMeRes.value?.success &&
+        onlRes.status === "fulfilled" &&
+        !onlRes.value?.success
+      ) {
+        setEnrError(stMeRes.value?.message || "Unable to load your enrolled courses.");
       }
     } catch {
       setEnrError("Network error while loading enrolled courses.");
@@ -244,36 +307,6 @@ export default function StudentCoursesPage() {
       setIsEnrLoading(false);
     }
   }, [user_id]);
-
-  // ── Fetch All Courses (Catalog) independently ──
-  const loadCatalog = useCallback(async () => {
-    setIsCatalogLoading(true);
-    setCatalogError(null);
-
-    try {
-      const res = await getCourses();
-      if (res.success && res.data) {
-        let list: Course[] = [];
-        if (Array.isArray(res.data)) {
-          list = res.data;
-        } else if ("courses" in res.data && Array.isArray((res.data as any).courses)) {
-          list = (res.data as any).courses;
-        }
-        setAllCourses(list);
-      } else {
-        setCatalogError(res.message || "Unable to load course catalog.");
-      }
-    } catch {
-      setCatalogError("Network error while connecting to course catalog.");
-    } finally {
-      setIsCatalogLoading(false);
-    }
-  }, []);
-
-  // Initial load
-  useEffect(() => {
-    loadCatalog();
-  }, [loadCatalog]);
 
   useEffect(() => {
     if (!isStudentLoading && user_id) {
@@ -283,14 +316,7 @@ export default function StudentCoursesPage() {
     }
   }, [user_id, isStudentLoading, loadEnrollments]);
 
-  // ── Build Enrolled Course ID Set (Match by allCourses.course_id === enrollment.stc_course_id) ──
-  const enrolledCourseIdSet = new Set<number>();
-  enrollments.forEach((e) => {
-    const cId = Number((e as any).stc_course_id ?? e.course_id);
-    if (cId) enrolledCourseIdSet.add(cId);
-  });
-
-  // ── Filter Section 1: Enrolled Courses ──
+  // ── Filter Section 1A: Offline Enrolled Courses ──
   const filteredEnrollments = enrollments.filter((e) => {
     if (!search.trim()) return true;
     const term = search.toLowerCase();
@@ -308,29 +334,20 @@ export default function StudentCoursesPage() {
     );
   });
 
-  // ── Filter Section 2: All Catalog Courses ──
-  const filteredCatalog = allCourses.filter((c) => {
+  // ── Filter Section 1B: Online Enrolled Courses ──
+  const filteredOnlineCourses = onlineCourses.filter((c) => {
     if (!search.trim()) return true;
     const term = search.toLowerCase();
     const cName = (c.course_name || "").toLowerCase();
     const cCode = (c.course_code || "").toLowerCase();
     const desc = (c.course_description || "").toLowerCase();
-    const duration = (c.course_duration || "").toLowerCase();
-    const modules = (c.course_modules || "").toLowerCase();
     const cId = String(c.course_id || "");
-    return (
-      cName.includes(term) ||
-      cCode.includes(term) ||
-      desc.includes(term) ||
-      duration.includes(term) ||
-      modules.includes(term) ||
-      cId.includes(term)
-    );
+    return cName.includes(term) || cCode.includes(term) || desc.includes(term) || cId.includes(term);
   });
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="p-3 sm:p-5 md:p-6 lg:p-8 space-y-5 sm:space-y-7 lg:space-y-8 max-w-screen-xl mx-auto">
+      <div className="p-3 sm:p-5 md:p-6 lg:p-8 space-y-5 sm:space-y-7 lg:space-y-8 max-w-screen-2xl mx-auto">
         {/* ── Page Header & Unified Search ── */}
         <motion.div
           {...fadeUp(0)}
@@ -344,20 +361,20 @@ export default function StudentCoursesPage() {
               </span>
             </div>
             <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold text-[#111827] tracking-tight">
-              My Enrolled Courses &amp; Catalog
+              My Enrolled Courses
             </h1>
             <p className="text-xs sm:text-sm text-[#64748B] mt-0.5">
-              Your registered academic programs, batches, syllabus access, and available catalog courses.
+              Your registered academic classroom programs, batch schedules, fees ledger, and online LMS courses.
             </p>
           </div>
 
-          {/* Global Search across both enrolled & catalog courses */}
+          {/* Global Search across enrolled courses */}
           <div className="flex items-center gap-2">
             <div className="relative w-full sm:w-64">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8] pointer-events-none" />
               <input
                 type="text"
-                placeholder="Search all courses..."
+                placeholder="Search enrolled courses..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full h-9 sm:h-10 pl-9 pr-4 rounded-xl bg-white border border-[#E2E8F0] text-xs sm:text-sm text-[#111827] placeholder:text-[#94A3B8] focus:outline-none focus:border-[#5B21F4] focus:ring-2 focus:ring-[#5B21F4]/10 transition-all shadow-sm"
@@ -407,17 +424,83 @@ export default function StudentCoursesPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-base sm:text-lg lg:text-xl font-black text-[#111827]">
-                    My Enrolled Courses
+                    Courses
                   </h2>
                   <Badge variant="default" className="text-[10px] sm:text-xs">
-                    {enrollments.length} Active {enrollments.length === 1 ? "Course" : "Courses"}
+                    {enrollments.length + onlineCourses.length} Active {enrollments.length + onlineCourses.length === 1 ? "Course" : "Courses"}
                   </Badge>
                 </div>
                 <p className="text-[11px] sm:text-xs text-[#64748B]">
-                  Academic programs currently active in your student record
+                  Academic classroom programs and online LMS courses active in your student record
                 </p>
               </div>
             </div>
+          </div>
+
+          {/* Exactly 3 Sections / Tabs: [ Enrolled Courses ] [ Offline Courses ] [ Online Courses ] */}
+          <div className="flex items-center gap-1.5 p-1 bg-gray-100 rounded-xl border border-gray-200/80 overflow-x-auto w-fit">
+            <button
+              type="button"
+              onClick={() => setCoursesTab("enrolled")}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                coursesTab === "enrolled"
+                  ? "bg-white text-[#5B21F4] shadow-sm font-extrabold"
+                  : "text-[#64748B] hover:text-[#111827]"
+              }`}
+            >
+              <span>Enrolled Courses</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  coursesTab === "enrolled"
+                    ? "bg-[#F1EEFF] text-[#5B21F4]"
+                    : "bg-gray-200 text-gray-700"
+                }`}
+              >
+                {enrollments.length + onlineCourses.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCoursesTab("offline")}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                coursesTab === "offline"
+                  ? "bg-white text-[#5B21F4] shadow-sm font-extrabold"
+                  : "text-[#64748B] hover:text-[#111827]"
+              }`}
+            >
+              <span>Offline Courses</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  coursesTab === "offline"
+                    ? "bg-[#F1EEFF] text-[#5B21F4]"
+                    : "bg-gray-200 text-gray-700"
+                }`}
+              >
+                {enrollments.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCoursesTab("online")}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                coursesTab === "online"
+                  ? "bg-white text-[#5B21F4] shadow-sm font-extrabold"
+                  : "text-[#64748B] hover:text-[#111827]"
+              }`}
+            >
+              <span>Online Courses</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  coursesTab === "online"
+                    ? "bg-[#F1EEFF] text-[#5B21F4]"
+                    : "bg-gray-200 text-gray-700"
+                }`}
+              >
+                {onlineCourses.length}
+              </span>
+            </button>
           </div>
 
           {/* Enrollment Error Notice */}
@@ -442,19 +525,18 @@ export default function StudentCoursesPage() {
           {isEnrLoading && (
             <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 lg:gap-5">
               {[1, 2, 3, 4].map((i) => (
-                <Card key={i} className="p-3 sm:p-4 lg:p-5 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <Skeleton className="w-9 h-9 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-xl sm:rounded-2xl" />
-                    <Skeleton className="w-14 sm:w-16 h-5 rounded-full" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Skeleton className="w-4/5 h-4 rounded" />
-                    <Skeleton className="w-1/2 h-3 rounded" />
+                <Card key={i} className="overflow-hidden border border-[#DDD6FE]/60 flex flex-col justify-between">
+                  <Skeleton className="w-full aspect-[16/9]" />
+                  <div className="p-2.5 sm:p-4 space-y-2.5">
+                    <div className="space-y-1.5">
+                      <Skeleton className="w-4/5 h-4 rounded" />
+                      <Skeleton className="w-1/2 h-3 rounded" />
+                    </div>
                     <Skeleton className="w-full h-16 sm:h-20 rounded-xl" />
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5 sm:gap-2 pt-1">
-                    <Skeleton className="h-8 sm:h-9 rounded-lg" />
-                    <Skeleton className="h-8 sm:h-9 rounded-lg" />
+                    <div className="grid grid-cols-2 gap-1.5 sm:gap-2 pt-1">
+                      <Skeleton className="h-8 sm:h-9 rounded-lg" />
+                      <Skeleton className="h-8 sm:h-9 rounded-lg" />
+                    </div>
                   </div>
                 </Card>
               ))}
@@ -462,210 +544,458 @@ export default function StudentCoursesPage() {
           )}
 
           {/* Enrolled Course Cards (Strictly grid-cols-2 on mobile, tablet & desktop; 3 on xl) */}
-          {!isEnrLoading && !enrError && filteredEnrollments.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 lg:gap-5">
-              {filteredEnrollments.map((enrollment, i) => {
-                const courseCode = enrollment.course_code || "COURSE";
-                const theme = getThemeForCode(courseCode);
-                const courseName = enrollment.course_name || `Course #${enrollment.course_id}`;
-                const totalFee = extractEnrollmentTotalFee(enrollment);
-                const discount = extractEnrollmentDiscount(enrollment);
-                const initialPayment = extractEnrollmentInitialPayment(enrollment);
-                const dues = extractEnrollmentDues(enrollment);
-                const totalPaid = extractEnrollmentTotalPaid(enrollment);
-                const batchName = (enrollment as any).batch_name || "General Batch";
-                const isFullyPaid = dues <= 0;
-                const status = isFullyPaid ? "Fully Paid" : "Active";
+          {!isEnrLoading &&
+            !enrError &&
+            ((coursesTab === "enrolled" && (filteredEnrollments.length > 0 || filteredOnlineCourses.length > 0)) ||
+              (coursesTab === "offline" && filteredEnrollments.length > 0) ||
+              (coursesTab === "online" && filteredOnlineCourses.length > 0)) && (
+              <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
+                {/* 1. Offline Courses */}
+                {(coursesTab === "enrolled" || coursesTab === "offline") &&
+                  filteredEnrollments.map((enrollment, i) => {
+                    const courseCode = enrollment.course_code || "COURSE";
+                    const theme = getThemeForCode(courseCode);
+                    const courseName = enrollment.course_name || `Course #${enrollment.course_id}`;
+                    const totalFee = extractEnrollmentTotalFee(enrollment);
+                    const discount = extractEnrollmentDiscount(enrollment);
+                    const initialPayment = extractEnrollmentInitialPayment(enrollment);
+                    const dues = extractEnrollmentDues(enrollment);
+                    const totalPaid = extractEnrollmentTotalPaid(enrollment);
+                    const batchName = (enrollment as any).batch_name || "General Batch";
+                    const isFullyPaid = dues <= 0;
+                    const status = isFullyPaid ? "Fully Paid" : "Active";
 
-                return (
-                  <motion.div
-                    key={enrollment.stc_id}
-                    initial={{ opacity: 0, y: 16 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{
-                      delay: 0.05 + i * 0.04,
-                      duration: 0.35,
-                      ease: [0.4, 0, 0.2, 1] as const,
-                    }}
-                    className="flex"
-                  >
-                    <Card className="w-full flex flex-col justify-between overflow-hidden border-2 border-[#DDD6FE]/70 hover:border-[#5B21F4] transition-all md:hover:-translate-y-0.5 md:hover:shadow-md group relative">
-                      {/* Top highlight indicator */}
-                      <div
-                        className="h-1 sm:h-1.5 w-full shrink-0"
-                        style={{
-                          background: `linear-gradient(90deg, ${theme.color} 0%, #2563EB 100%)`,
+                    const rawImg =
+                      (enrollment as any).course_img_path ||
+                      (enrollment as any).img_path ||
+                      (enrollment as any).course_image ||
+                      (enrollment as any).image ||
+                      catalogMap.get(Number(enrollment.course_id))?.course_img_path;
+                    const resolvedImg = getCourseImageUrl(rawImg);
+
+                    return (
+                      <motion.div
+                        key={`off_${enrollment.stc_id}`}
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{
+                          delay: 0.05 + i * 0.04,
+                          duration: 0.35,
+                          ease: [0.4, 0, 0.2, 1] as const,
                         }}
-                      />
-
-                      {/* Header */}
-                      <CardHeader className="p-2.5 sm:p-4 lg:p-5 space-y-2">
-                        <div className="flex items-start justify-between gap-1.5 sm:gap-2">
+                        className="flex"
+                      >
+                        <Card className="w-full flex flex-col justify-between overflow-hidden border-2 border-[#DDD6FE]/70 hover:border-[#5B21F4] transition-all md:hover:-translate-y-0.5 md:hover:shadow-md group relative bg-white">
+                          {/* Top highlight indicator */}
                           <div
-                            className="w-9 h-9 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 shadow-sm"
-                            style={{ backgroundColor: theme.bg, color: theme.color }}
-                          >
-                            <BookOpen className="size-4 sm:size-5 lg:size-6" />
-                          </div>
-                          <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap justify-end">
-                            {enrollment.course_code && (
-                              <Badge
-                                variant="outline"
-                                className="px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-bold"
-                                style={{
-                                  backgroundColor: theme.bg,
-                                  color: theme.color,
-                                  borderColor: theme.border,
-                                }}
-                              >
-                                {enrollment.course_code}
-                              </Badge>
-                            )}
-                            <Badge
-                              variant={isFullyPaid ? "success" : "default"}
-                              className="px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-bold"
-                            >
-                              {status}
-                            </Badge>
-                          </div>
-                        </div>
+                            className="h-1 sm:h-1.5 w-full shrink-0"
+                            style={{
+                              background: `linear-gradient(90deg, ${theme.color} 0%, #2563EB 100%)`,
+                            }}
+                          />
 
-                        <div>
-                          <CardTitle className="line-clamp-2 text-xs sm:text-sm lg:text-base font-bold text-[#111827] leading-tight sm:leading-snug">
-                            {courseName}
-                          </CardTitle>
+                          {/* ── Top Course Image Banner ── */}
+                          <div className="relative aspect-[16/9] w-full bg-slate-900 overflow-hidden shrink-0">
+                            <CourseThumbnail
+                              src={resolvedImg}
+                              alt={courseName}
+                              courseCode={courseCode}
+                              courseName={courseName}
+                              isOnline={false}
+                              theme={theme}
+                            />
 
-                          <div className="flex items-center gap-1 text-[10px] sm:text-xs text-[#64748B] mt-1 min-w-0">
-                            <span className="shrink-0 font-medium text-[#475569]">Batch:</span>
-                            <span className="truncate font-semibold text-[#111827]">{batchName}</span>
-                          </div>
-
-                          <div className="mt-1 flex items-center gap-1">
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="inline-flex items-center gap-1 text-[9px] sm:text-[10px] font-mono font-bold bg-[#F8FAFC] text-[#475569] px-1.5 py-0.5 rounded border border-[#E2E8F0] cursor-help">
-                                  #{enrollment.stc_id}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                Enrollment ID #{enrollment.stc_id}
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
-                        </div>
-                      </CardHeader>
-
-                      {/* Financial Breakdown (Strictly using stc_dues directly) */}
-                      <CardContent className="p-2.5 pt-0 sm:p-4 sm:pt-0 lg:p-5 lg:pt-0 space-y-2">
-                        <div className="p-2 sm:p-2.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-1 text-[10px] sm:text-xs">
-                          <div className="flex items-center justify-between text-[#64748B]">
-                            <span className="truncate">Total Fee:</span>
-                            <span className="font-semibold text-[#111827] shrink-0">
-                              ₹{totalFee.toLocaleString("en-IN")}
-                            </span>
-                          </div>
-
-                          {discount > 0 && (
-                            <div className="flex items-center justify-between text-emerald-600">
-                              <span className="truncate">Discount:</span>
-                              <span className="font-semibold shrink-0">
-                                -₹{discount.toLocaleString("en-IN")}
+                            {/* Format Badge (Top Left) */}
+                            <div className="absolute top-2 left-2 z-10 flex items-center">
+                              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-extrabold bg-blue-600/90 text-white backdrop-blur-md shadow-xs border border-blue-400/30 tracking-wide">
+                                Offline Course
                               </span>
                             </div>
-                          )}
 
-                          <div className="flex items-center justify-between text-[#64748B]">
-                            <span className="truncate">Initial:</span>
-                            <span className="font-semibold text-[#111827] shrink-0">
-                              ₹{initialPayment.toLocaleString("en-IN")}
+                            {/* Status Badge (Top Right) */}
+                            <div className="absolute top-2 right-2 z-10 flex items-center">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-extrabold backdrop-blur-md shadow-xs border ${
+                                  isFullyPaid
+                                    ? "bg-emerald-600/90 text-white border-emerald-400/30"
+                                    : "bg-emerald-600/90 text-white border-emerald-400/30"
+                                }`}
+                              >
+                                {status}
+                              </span>
+                            </div>
+
+                            {/* Course Code (Bottom Left) */}
+                            {enrollment.course_code && (
+                              <div className="absolute bottom-2 left-2 z-10 flex items-center">
+                                <span className="px-2 py-0.5 rounded-md text-[9px] sm:text-[10px] font-black bg-black/65 text-white backdrop-blur-md border border-white/20 uppercase tracking-wider shadow-xs">
+                                  {enrollment.course_code}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Header */}
+                          <CardHeader className="p-2.5 sm:p-4 space-y-1.5">
+                            <div>
+                              <CardTitle className="line-clamp-2 text-xs sm:text-sm lg:text-base font-bold text-[#111827] leading-tight sm:leading-snug group-hover:text-[#5B21F4] transition-colors">
+                                {courseName}
+                              </CardTitle>
+
+                              <div className="flex items-center gap-1 text-[10px] sm:text-xs text-[#64748B] mt-1.5 min-w-0">
+                                <span className="shrink-0 font-medium text-[#475569]">Batch:</span>
+                                <span className="truncate font-semibold text-[#111827]">{batchName}</span>
+                              </div>
+
+                              <div className="mt-1 flex items-center gap-1">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex items-center gap-1 text-[9px] sm:text-[10px] font-mono font-bold bg-[#F8FAFC] text-[#475569] px-1.5 py-0.5 rounded border border-[#E2E8F0] cursor-help">
+                                      #{enrollment.stc_id}
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    Enrollment ID #{enrollment.stc_id}
+                                  </TooltipContent>
+                                </Tooltip>
+                              </div>
+                            </div>
+                          </CardHeader>
+
+                          {/* Financial Breakdown */}
+                          <CardContent className="p-2 sm:p-4 lg:p-5 pt-0 space-y-1.5 sm:space-y-2">
+                            {/* Mobile: Compact single row */}
+                            <div className="flex sm:hidden items-center justify-between text-[10px] pt-1.5 border-t border-[#F1F5F9]">
+                              <span className="text-[#64748B]">
+                                Paid: <strong className="text-emerald-700">₹{totalPaid.toLocaleString("en-IN")}</strong>
+                              </span>
+                              <span className={dues > 0 ? "text-amber-700 font-bold" : "text-emerald-700 font-bold"}>
+                                {dues > 0 ? `Due: ₹${dues.toLocaleString("en-IN")}` : "Paid ✓"}
+                              </span>
+                            </div>
+
+                            <div className="hidden sm:block p-2.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-1 text-[10px] sm:text-xs">
+                              <div className="flex items-center justify-between text-[#64748B]">
+                                <span className="truncate">Total Fee:</span>
+                                <span className="font-semibold text-[#111827] shrink-0">
+                                  ₹{totalFee.toLocaleString("en-IN")}
+                                </span>
+                              </div>
+
+                              {discount > 0 && (
+                                <div className="flex items-center justify-between text-emerald-600">
+                                  <span className="truncate">Discount:</span>
+                                  <span className="font-semibold shrink-0">
+                                    -₹{discount.toLocaleString("en-IN")}
+                                  </span>
+                                </div>
+                              )}
+
+                              <div className="flex items-center justify-between text-[#64748B]">
+                                <span className="truncate">Initial:</span>
+                                <span className="font-semibold text-[#111827] shrink-0">
+                                  ₹{initialPayment.toLocaleString("en-IN")}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center justify-between text-[#64748B]">
+                                <span className="truncate">Paid:</span>
+                                <span className="font-semibold text-emerald-700 shrink-0">
+                                  ₹{totalPaid.toLocaleString("en-IN")}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center justify-between pt-1 border-t border-[#E2E8F0] font-bold">
+                                <span className={`truncate ${dues > 0 ? "text-amber-700" : "text-emerald-700"}`}>
+                                  Remaining Due:
+                                </span>
+                                <span className={`shrink-0 ${dues > 0 ? "text-amber-700" : "text-emerald-700"}`}>
+                                  ₹{dues.toLocaleString("en-IN")}
+                                </span>
+                              </div>
+                            </div>
+                          </CardContent>
+
+                          {/* Card Footer Actions */}
+                          <CardFooter className="p-2 sm:p-4 lg:p-5 pt-0 mt-auto">
+                            {/* Mobile: Single primary action */}
+                            <div className="block sm:hidden w-full">
+                              {dues > 0 ? (
+                                <Button
+                                  asChild
+                                  size="sm"
+                                  className="w-full h-7 text-[10px] font-bold bg-[#5B21F4] hover:bg-[#4C1BD4] text-white shadow-none"
+                                >
+                                  <Link href="/student/fees">
+                                    <span>Pay Due</span>
+                                    <ArrowRight className="size-3 ml-1" />
+                                  </Link>
+                                </Button>
+                              ) : (
+                                <Button
+                                  asChild
+                                  size="sm"
+                                  className="w-full h-7 text-[10px] font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-none"
+                                >
+                                  <Link href={`/student/courses/${enrollment.course_id}`}>
+                                    <span>View Course</span>
+                                    <ArrowRight className="size-3 ml-1" />
+                                  </Link>
+                                </Button>
+                              )}
+                            </div>
+
+                            {/* Desktop: Dual action buttons */}
+                            <div className="hidden sm:grid grid-cols-2 gap-1.5 sm:gap-2 w-full">
+                              <Button
+                                asChild
+                                size="sm"
+                                className="w-full text-xs lg:text-sm px-1.5 sm:px-3 bg-gradient-to-r from-[#2563EB] to-[#1D4ED8] hover:from-[#1D4ED8] hover:to-[#1E40AF] text-white shadow-sm"
+                              >
+                                <Link href={`/student/courses/${enrollment.course_id}`}>
+                                  <span className="truncate">View Course</span>
+                                  <ArrowRight className="size-3 sm:size-3.5 shrink-0 hidden sm:inline" />
+                                </Link>
+                              </Button>
+
+                              {dues > 0 ? (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      asChild
+                                      variant="outline"
+                                      size="sm"
+                                      className="w-full text-xs lg:text-sm px-1.5 sm:px-3 border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 hover:text-amber-900 shadow-sm"
+                                    >
+                                      <Link href="/student/fees">
+                                        <CreditCard className="size-3 sm:size-3.5 shrink-0 text-amber-700" />
+                                        <span className="truncate">Pay Due</span>
+                                      </Link>
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Pay remaining dues</TooltipContent>
+                                </Tooltip>
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled
+                                  className="w-full text-xs lg:text-sm px-1.5 sm:px-3 border-emerald-200 bg-emerald-50 text-emerald-700 opacity-90 cursor-not-allowed shadow-none"
+                                >
+                                  <CheckCircle2 className="size-3 sm:size-3.5 shrink-0 text-emerald-600" />
+                                  <span className="truncate">Paid</span>
+                                </Button>
+                              )}
+                            </div>
+                          </CardFooter>
+                        </Card>
+                      </motion.div>
+                    );
+                  })}
+
+                {/* 2. Online Courses */}
+                {(coursesTab === "enrolled" || coursesTab === "online") &&
+                  filteredOnlineCourses.map((course, idx) => {
+                    const matchedCourse =
+                      onlineCatalogMap.get(Number(course.course_id)) ||
+                      catalogMap.get(Number(course.course_id));
+                    const courseCode = course.course_code || matchedCourse?.course_code || "ADCA";
+                    const theme = getThemeForCode(courseCode);
+                    const rawImg =
+                      course.course_img_path ||
+                      (course as any).img_path ||
+                      (course as any).course_image ||
+                      (course as any).image ||
+                      matchedCourse?.course_img_path;
+                    const resolvedImg = getCourseImageUrl(rawImg);
+
+                    return (
+                      <motion.div
+                        key={`onl_${course.course_id}`}
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{
+                          delay: 0.05 + idx * 0.04,
+                          duration: 0.35,
+                          ease: [0.4, 0, 0.2, 1] as const,
+                        }}
+                        className="flex"
+                      >
+                        <Card className="w-full flex flex-col justify-between overflow-hidden border-2 border-[#DDD6FE]/70 hover:border-[#5B21F4] transition-all md:hover:-translate-y-0.5 md:hover:shadow-md group relative bg-white">
+                          {/* Top highlight indicator */}
+                          <div
+                            className="h-1 sm:h-1.5 w-full shrink-0"
+                            style={{
+                              background: `linear-gradient(90deg, ${theme.color} 0%, #5B21F4 100%)`,
+                            }}
+                          />
+
+                          {/* ── Top Course Image Banner ── */}
+                          <div className="relative aspect-[16/9] w-full bg-slate-900 overflow-hidden shrink-0">
+                            <CourseThumbnail
+                              src={resolvedImg}
+                              alt={course.course_name}
+                              courseCode={courseCode}
+                              courseName={course.course_name}
+                              isOnline={true}
+                              theme={theme}
+                            />
+
+                            {/* Format Badge (Top Left) */}
+                            <div className="absolute top-2 left-2 z-10 flex items-center">
+                              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-extrabold bg-[#5B21F4]/90 text-white backdrop-blur-md shadow-xs border border-purple-400/30 flex items-center gap-1 tracking-wide">
+                                <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                                <span>Online Course</span>
+                              </span>
+                            </div>
+
+                            {/* Status Badge (Top Right) */}
+                            <div className="absolute top-2 right-2 z-10 flex items-center">
+                              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-extrabold bg-emerald-600/90 text-white backdrop-blur-md shadow-xs border border-emerald-400/30">
+                                Purchased
+                              </span>
+                            </div>
+
+                            {/* Course Code (Bottom Left) */}
+                            {courseCode && (
+                              <div className="absolute bottom-2 left-2 z-10 flex items-center">
+                                <span className="px-2 py-0.5 rounded-md text-[9px] sm:text-[10px] font-black bg-black/65 text-white backdrop-blur-md border border-white/20 uppercase tracking-wider shadow-xs">
+                                  {courseCode}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Header */}
+                          <CardHeader className="p-2.5 sm:p-4 space-y-1.5">
+                            <div>
+                              <CardTitle className="line-clamp-2 text-xs sm:text-sm lg:text-base font-bold text-[#111827] leading-tight sm:leading-snug group-hover:text-[#5B21F4] transition-colors">
+                                {course.course_name}
+                              </CardTitle>
+
+                              <div className="flex items-center gap-1 text-[10px] sm:text-xs text-[#64748B] mt-1.5 min-w-0">
+                                <span className="shrink-0 font-medium text-[#475569]">Type:</span>
+                                <span className="truncate font-semibold text-[#111827]">Digital LMS &bull; Self-Paced</span>
+                              </div>
+
+                              <div className="mt-1 flex items-center gap-1">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex items-center gap-1 text-[9px] sm:text-[10px] font-mono font-bold bg-[#F8FAFC] text-[#475569] px-1.5 py-0.5 rounded border border-[#E2E8F0] cursor-help">
+                                      #{course.course_id}
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    Course ID #{course.course_id}
+                                  </TooltipContent>
+                                </Tooltip>
+                              </div>
+                            </div>
+                          </CardHeader>
+
+                        {/* Meta Breakdown */}
+                        <CardContent className="p-2 sm:p-4 lg:p-5 pt-0 space-y-1.5 sm:space-y-2">
+                          {/* Mobile: Compact single row */}
+                          <div className="flex sm:hidden items-center justify-between text-[10px] pt-1.5 border-t border-[#F1F5F9]">
+                            <span className="text-[#64748B] flex items-center gap-1 font-medium">
+                              <Clock className="w-3 h-3 text-[#5B21F4]" />
+                              {course.course_duration || "Self-Paced"}
+                            </span>
+                            <span className="text-emerald-700 font-bold">
+                              ₹{Number(course.amount_paid || course.course_fee || 0).toLocaleString("en-IN")}
                             </span>
                           </div>
 
-                          <div className="flex items-center justify-between text-[#64748B]">
-                            <span className="truncate">Paid:</span>
-                            <span className="font-semibold text-emerald-700 shrink-0">
-                              ₹{totalPaid.toLocaleString("en-IN")}
-                            </span>
+                          {/* Desktop: Details Box */}
+                          <div className="hidden sm:block p-2.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-1 text-[10px] sm:text-xs">
+                            <div className="flex items-center justify-between text-[#64748B]">
+                              <span className="truncate">Duration:</span>
+                              <span className="font-semibold text-[#111827] shrink-0">
+                                {course.course_duration || "Self-Paced"}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-[#64748B]">
+                              <span className="truncate">Validity:</span>
+                              <span className="font-semibold text-[#111827] shrink-0">
+                                {course.course_validity || "Lifetime Access"}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-[#64748B] pt-0.5 border-t border-[#E2E8F0]/60">
+                              <span className="truncate font-bold text-[#111827]">Amount Paid:</span>
+                              <span className="font-bold text-emerald-700 shrink-0">
+                                ₹{Number(course.amount_paid || course.course_fee || 0).toLocaleString("en-IN")}
+                              </span>
+                            </div>
                           </div>
+                        </CardContent>
 
-                          <div className="flex items-center justify-between pt-1 border-t border-[#E2E8F0] font-bold">
-                            <span className={`truncate ${dues > 0 ? "text-amber-700" : "text-emerald-700"}`}>
-                              Remaining Due:
-                            </span>
-                            <span className={`shrink-0 ${dues > 0 ? "text-amber-700" : "text-emerald-700"}`}>
-                              ₹{dues.toLocaleString("en-IN")}
-                            </span>
-                          </div>
-                        </div>
-                      </CardContent>
-
-                      {/* Card Footer Actions */}
-                      <CardFooter className="p-2.5 pt-0 sm:p-4 sm:pt-0 lg:p-5 lg:pt-0 mt-auto">
-                        <div className="grid grid-cols-2 gap-1.5 sm:gap-2 w-full">
+                        <CardFooter className="p-2 sm:p-4 lg:p-5 pt-0 mt-auto">
                           <Button
                             asChild
                             size="sm"
-                            className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 bg-gradient-to-r from-[#2563EB] to-[#1D4ED8] hover:from-[#1D4ED8] hover:to-[#1E40AF] text-white shadow-sm"
+                            className="w-full text-xs lg:text-sm px-1.5 sm:px-3 bg-gradient-to-r from-[#5B21F4] to-[#4C1BD4] hover:from-[#4C1BD4] hover:to-[#3B12B3] text-white shadow-sm flex items-center justify-center gap-1.5 font-bold h-8 sm:h-9"
                           >
-                            <Link href={`/student/courses/${enrollment.course_id}`}>
-                              <span className="truncate">Syllabus</span>
-                              <ArrowRight className="size-3 sm:size-3.5 shrink-0 hidden sm:inline" />
+                            <Link href={`/student/online-courses/${course.course_id}`}>
+                              <PlayCircle className="size-3.5 sm:size-4 shrink-0" />
+                              <span className="truncate">Continue Learning</span>
                             </Link>
                           </Button>
+                        </CardFooter>
+                      </Card>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            )}
 
-                          {dues > 0 ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  asChild
-                                  variant="outline"
-                                  size="sm"
-                                  className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 hover:text-amber-900 shadow-sm"
-                                >
-                                  <Link href="/student/fees">
-                                    <CreditCard className="size-3 sm:size-3.5 shrink-0 text-amber-700" />
-                                    <span className="truncate">Pay Due</span>
-                                  </Link>
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Pay remaining dues</TooltipContent>
-                            </Tooltip>
-                          ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled
-                              className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 border-emerald-200 bg-emerald-50 text-emerald-700 opacity-90 cursor-not-allowed shadow-none"
-                            >
-                              <CheckCircle2 className="size-3 sm:size-3.5 shrink-0 text-emerald-600" />
-                              <span className="truncate">Paid</span>
-                            </Button>
-                          )}
-                        </div>
-                      </CardFooter>
-                    </Card>
-                  </motion.div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Empty State for Enrolled Courses */}
-          {!isEnrLoading && !enrError && filteredEnrollments.length === 0 && (
-            <Card className="text-center py-8 sm:py-10 px-4 sm:px-6 space-y-2 border-dashed border-[#E2E8F0]">
-              <BookOpen className="size-8 sm:size-10 text-[#CBD5E1] mx-auto" />
-              <h3 className="text-xs sm:text-sm font-bold text-[#111827]">
-                {search
-                  ? `No enrolled courses match "${search}"`
-                  : "No enrolled courses yet"}
-              </h3>
-              <p className="text-[11px] sm:text-xs text-[#64748B] max-w-sm mx-auto">
-                {search
-                  ? "Try searching for a different keyword or check the full catalog below."
-                  : "Browse the complete course catalog below to explore and enroll in programs."}
-              </p>
-            </Card>
-          )}
+          {/* Empty States depending on active tab */}
+          {!isEnrLoading &&
+            !enrError &&
+            ((coursesTab === "enrolled" &&
+              filteredEnrollments.length === 0 &&
+              filteredOnlineCourses.length === 0) ||
+              (coursesTab === "offline" && filteredEnrollments.length === 0) ||
+              (coursesTab === "online" && filteredOnlineCourses.length === 0)) && (
+              <Card className="text-center py-8 sm:py-10 px-4 sm:px-6 space-y-2 border-dashed border-[#E2E8F0]">
+                {coursesTab === "online" ? (
+                  <PlayCircle className="size-8 sm:size-10 text-[#CBD5E1] mx-auto" />
+                ) : (
+                  <BookOpen className="size-8 sm:size-10 text-[#CBD5E1] mx-auto" />
+                )}
+                <h3 className="text-xs sm:text-sm font-bold text-[#111827]">
+                  {search
+                    ? `No ${coursesTab} courses match "${search}"`
+                    : coursesTab === "online"
+                    ? "No online courses purchased yet"
+                    : coursesTab === "offline"
+                    ? "No offline courses enrolled"
+                    : "No courses enrolled yet"}
+                </h3>
+                <p className="text-[11px] sm:text-xs text-[#64748B] max-w-sm mx-auto">
+                  {search
+                    ? "Try searching for a different keyword or check the full catalog below."
+                    : coursesTab === "online"
+                    ? "Explore our digital LMS courses to start learning anywhere."
+                    : coursesTab === "offline"
+                    ? "Offline classroom admissions will appear here once verified."
+                    : "Browse the complete course catalog below to explore and enroll in programs."}
+                </p>
+                {!search && (
+                  <div className="pt-2 flex items-center justify-center gap-2 flex-wrap">
+                    {coursesTab !== "online" && (
+                      <Button asChild size="sm" className="bg-[#111827] hover:bg-[#1E293B] text-white text-xs font-bold rounded-xl">
+                        <Link href="/student/offline-courses">Browse Offline Courses</Link>
+                      </Button>
+                    )}
+                    {coursesTab !== "offline" && (
+                      <Button asChild size="sm" className="bg-[#5B21F4] hover:bg-[#4C1BD4] text-white text-xs font-bold rounded-xl shadow-md shadow-[#5B21F4]/20">
+                        <Link href="/student/online-courses">Browse Online Courses</Link>
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </Card>
+            )}
         </section>
 
         {/* ── Section Divider ── */}
@@ -675,275 +1005,74 @@ export default function StudentCoursesPage() {
           </div>
           <div className="relative flex justify-center">
             <span className="bg-[#F8FAFC] px-3 sm:px-4 text-[10px] sm:text-xs font-bold uppercase tracking-wider text-[#94A3B8]">
-              Explore More Programs
+              Explore Course Offerings
             </span>
           </div>
         </div>
 
         {/* ══════════════════════════════════════════════════════════════════════ */}
-        {/* SECTION 2 — ALL COURSES (Complete Catalog)                             */}
+        {/* SECTION 2 — PROGRAM DIRECTORIES (Offline & Online Gateways)            */}
         {/* ══════════════════════════════════════════════════════════════════════ */}
-        <section className="space-y-3 sm:space-y-4">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
-              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-[#EFF6FF] text-[#2563EB] flex items-center justify-center shrink-0">
-                <Compass className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-base sm:text-lg lg:text-xl font-black text-[#111827]">
-                    All Courses
-                  </h2>
-                  <Badge variant="blue" className="text-[10px] sm:text-xs">
-                    {allCourses.length} Available {allCourses.length === 1 ? "Program" : "Programs"}
-                  </Badge>
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Gateway 1: Offline Courses */}
+          <Card className="p-4 sm:p-5 rounded-2xl border border-[#E2E8F0] bg-white hover:border-[#CBD5E1] transition-all flex flex-col justify-between space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center font-bold shadow-sm">
+                  <GraduationCap className="w-5 h-5" />
                 </div>
-                <p className="text-[11px] sm:text-xs text-[#64748B]">
-                  Complete curriculum catalog — explore modules, syllabus details, and new admissions
-                </p>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-[#111827]">
+                    Offline Classroom Courses
+                  </h3>
+                  <p className="text-[11px] text-[#64748B]">
+                    In-person diploma courses &amp; practical computer lab sessions
+                  </p>
+                </div>
               </div>
-            </div>
-          </div>
-
-          {/* Catalog Error Notice */}
-          {!isCatalogLoading && catalogError && (
-            <Alert variant="destructive" className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 min-w-0">
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-                <AlertDescription className="truncate">{catalogError}</AlertDescription>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={loadCatalog}
-                className="h-8 px-3 text-xs font-bold border-red-300 text-red-700 hover:bg-red-100 shrink-0"
-              >
-                Retry
-              </Button>
-            </Alert>
-          )}
-
-          {/* Catalog Skeletons (2 columns mobile, tablet & desktop; 3 columns XL) */}
-          {isCatalogLoading && (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 lg:gap-5">
-              {[1, 2, 3, 4, 5, 6].map((i) => (
-                <Card key={i} className="p-3 sm:p-4 lg:p-5 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <Skeleton className="w-9 h-9 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-xl sm:rounded-2xl" />
-                    <Skeleton className="w-14 sm:w-16 h-5 rounded-full" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Skeleton className="w-4/5 h-4 rounded" />
-                    <Skeleton className="w-full h-8 sm:h-10 rounded" />
-                    <Skeleton className="w-2/3 h-3 rounded" />
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5 sm:gap-2 pt-1">
-                    <Skeleton className="h-8 sm:h-9 rounded-lg" />
-                    <Skeleton className="h-8 sm:h-9 rounded-lg" />
-                  </div>
-                </Card>
-              ))}
-            </div>
-          )}
-
-          {/* Catalog Course Cards (Strictly grid-cols-2 on mobile, tablet & desktop; 3 on xl) */}
-          {!isCatalogLoading && !catalogError && filteredCatalog.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 lg:gap-5">
-              {filteredCatalog.map((course, i) => {
-                const courseId = Number(course.course_id);
-                const isEnrolled = enrolledCourseIdSet.has(courseId);
-                const courseCode = course.course_code || "COURSE";
-                const theme = getThemeForCode(courseCode);
-                const feeNum = Number(course.course_fee || 0);
-
-                return (
-                  <motion.div
-                    key={course.course_id}
-                    initial={{ opacity: 0, y: 16 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{
-                      delay: 0.05 + i * 0.03,
-                      duration: 0.35,
-                      ease: [0.4, 0, 0.2, 1] as const,
-                    }}
-                    className="flex"
-                  >
-                    <Card
-                      className={`w-full flex flex-col justify-between overflow-hidden border transition-all md:hover:-translate-y-0.5 md:hover:shadow-md group relative ${
-                        isEnrolled
-                          ? "border-emerald-200 md:hover:border-emerald-400"
-                          : "border-[#E2E8F0] md:hover:border-[#DDD6FE]"
-                      }`}
-                    >
-                      <CardHeader className="p-2.5 sm:p-4 lg:p-5 space-y-2">
-                        {/* Header icon + badges */}
-                        <div className="flex items-start justify-between gap-1.5 sm:gap-2">
-                          <div
-                            className="w-9 h-9 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 shadow-sm"
-                            style={{ backgroundColor: theme.bg, color: theme.color }}
-                          >
-                            <BookOpen className="size-4 sm:size-5 lg:size-6" />
-                          </div>
-
-                          <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap justify-end">
-                            {course.course_code && (
-                              <Badge
-                                variant="outline"
-                                className="px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-bold"
-                                style={{
-                                  backgroundColor: theme.bg,
-                                  color: theme.color,
-                                  borderColor: theme.border,
-                                }}
-                              >
-                                {course.course_code}
-                              </Badge>
-                            )}
-
-                            {isEnrolled ? (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Badge
-                                    variant="success"
-                                    className="px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-bold gap-1 cursor-help"
-                                  >
-                                    <CheckCircle2 className="size-2.5 sm:size-3 shrink-0 text-emerald-600" />
-                                    <span className="truncate">Enrolled</span>
-                                  </Badge>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  You are currently enrolled
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : (
-                              <Badge
-                                variant="secondary"
-                                className="px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-bold"
-                              >
-                                Available
-                              </Badge>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Title & Description */}
-                        <div>
-                          <CardTitle className="line-clamp-2 text-xs sm:text-sm lg:text-base font-bold text-[#111827] leading-tight sm:leading-snug">
-                            {course.course_name}
-                          </CardTitle>
-
-                          <CardDescription className="line-clamp-2 text-[11px] sm:text-xs text-[#64748B] mt-1 leading-relaxed">
-                            {course.course_description || "Comprehensive curriculum and practical modules"}
-                          </CardDescription>
-                        </div>
-                      </CardHeader>
-
-                      <CardContent className="p-2.5 pt-0 sm:p-4 sm:pt-0 lg:p-5 lg:pt-0 space-y-2">
-                        {/* Duration & Modules Meta */}
-                        <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs text-[#64748B] pt-2 border-t border-[#F1F5F9] min-w-0">
-                          {course.course_duration && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <div className="flex min-w-0 items-center gap-1 shrink-0 cursor-help">
-                                  <Clock className="size-3 sm:size-3.5 text-[#94A3B8] shrink-0" />
-                                  <span className="truncate max-w-[65px] sm:max-w-[85px]">
-                                    {course.course_duration}
-                                  </span>
-                                </div>
-                              </TooltipTrigger>
-                              <TooltipContent>Duration: {course.course_duration}</TooltipContent>
-                            </Tooltip>
-                          )}
-
-                          {course.course_duration && course.course_modules && (
-                            <span className="text-[#CBD5E1] shrink-0">&bull;</span>
-                          )}
-
-                          {course.course_modules && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <div className="flex min-w-0 items-center gap-1 cursor-help">
-                                  <Layers className="size-3 sm:size-3.5 text-[#94A3B8] shrink-0" />
-                                  <span className="truncate">{course.course_modules}</span>
-                                </div>
-                              </TooltipTrigger>
-                              <TooltipContent>Modules: {course.course_modules}</TooltipContent>
-                            </Tooltip>
-                          )}
-                        </div>
-
-                        {/* Fee Display */}
-                        <div className="pt-2 border-t border-[#F8FAFC] flex items-center justify-between min-w-0 gap-1 text-[11px] sm:text-xs">
-                          <span className="text-[#64748B] truncate text-[10px] sm:text-xs">
-                            Tuition Fee:
-                          </span>
-                          <span className="font-extrabold text-xs sm:text-sm text-[#111827] whitespace-nowrap shrink-0">
-                            ₹{feeNum.toLocaleString("en-IN")}
-                          </span>
-                        </div>
-                      </CardContent>
-
-                      {/* Card Footer Actions */}
-                      <CardFooter className="p-2.5 pt-0 sm:p-4 sm:pt-0 lg:p-5 lg:pt-0 mt-auto">
-                        <div className="grid grid-cols-2 gap-1.5 sm:gap-2 w-full">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9"
-                            asChild
-                          >
-                            <Link href={`/student/courses/${course.course_id}`}>
-                              <span className="truncate">View Details</span>
-                            </Link>
-                          </Button>
-
-                          {isEnrolled ? (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled
-                              className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9 bg-emerald-50 text-emerald-700 border-emerald-200 opacity-90 cursor-not-allowed shadow-none"
-                            >
-                              <CheckCircle2 className="size-3 sm:size-3.5 shrink-0 text-emerald-600" />
-                              <span className="truncate">Enrolled</span>
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9"
-                              asChild
-                            >
-                              <Link href={getEnrollmentUrl(course.course_id)}>
-                                <span className="truncate">Enroll Now</span>
-                                <ArrowRight className="size-3 sm:size-3.5 shrink-0 hidden sm:inline" />
-                              </Link>
-                            </Button>
-                          )}
-                        </div>
-                      </CardFooter>
-                    </Card>
-                  </motion.div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Empty State for Catalog */}
-          {!isCatalogLoading && !catalogError && filteredCatalog.length === 0 && (
-            <Card className="text-center py-8 sm:py-10 px-4 sm:px-6 space-y-2 border-dashed border-[#E2E8F0]">
-              <Compass className="size-8 sm:size-10 text-[#CBD5E1] mx-auto" />
-              <h3 className="text-xs sm:text-sm font-bold text-[#111827]">
-                {search
-                  ? `No catalog courses match "${search}"`
-                  : "No courses available right now."}
-              </h3>
-              <p className="text-[11px] sm:text-xs text-[#64748B] max-w-sm mx-auto">
-                {search
-                  ? "Try clearing the search filter to browse the full catalog."
-                  : "Check back later for updated academic curriculum offerings."}
+              <p className="text-xs text-[#64748B] leading-relaxed pt-1">
+                Explore recognized diploma programs (ADCA, DCA, DTP, Tally) available at authorized Brainzima study centers with hands-on lab training.
               </p>
-            </Card>
-          )}
+            </div>
+            <div className="pt-2">
+              <Button asChild size="sm" className="w-full bg-[#111827] hover:bg-[#1E293B] text-white text-xs font-bold rounded-xl h-10">
+                <Link href="/student/offline-courses" className="flex items-center justify-center gap-1.5">
+                  <span>Browse Offline Courses</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </Button>
+            </div>
+          </Card>
+
+          {/* Gateway 2: Online Courses */}
+          <Card className="p-4 sm:p-5 rounded-2xl border border-[#DDD6FE] bg-gradient-to-br from-[#F1EEFF]/40 to-white hover:border-[#5B21F4] transition-all flex flex-col justify-between space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-[#F1EEFF] text-[#5B21F4] flex items-center justify-center font-bold shadow-sm">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-[#111827]">
+                    Online LMS Video Courses
+                  </h3>
+                  <p className="text-[11px] text-[#64748B]">
+                    Self-paced digital lectures, certificates &amp; lifetime access
+                  </p>
+                </div>
+              </div>
+              <p className="text-xs text-[#64748B] leading-relaxed pt-1">
+                Watch high-definition lessons anytime, follow curriculum syllabi, and earn verified certificates on course completion.
+              </p>
+            </div>
+            <div className="pt-2">
+              <Button asChild size="sm" className="w-full bg-[#5B21F4] hover:bg-[#4C1BD4] text-white text-xs font-bold rounded-xl shadow-md shadow-[#5B21F4]/20 h-10">
+                <Link href="/student/online-courses" className="flex items-center justify-center gap-1.5">
+                  <span>Browse Online Courses</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </Button>
+            </div>
+          </Card>
         </section>
       </div>
     </TooltipProvider>

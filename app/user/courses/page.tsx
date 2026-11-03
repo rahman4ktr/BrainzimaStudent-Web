@@ -22,6 +22,8 @@ import {
   type EnrollmentItem,
   type Course,
 } from "@/lib/api";
+import { getCourseImageUrl } from "@/lib/session";
+import CourseThumbnail from "@/components/courses/CourseThumbnail";
 import { useEnrollmentRoute } from "@/hooks/useEnrollmentRoute";
 import {
   Card,
@@ -335,7 +337,7 @@ export default function UserCoursesPage() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="p-3 sm:p-5 md:p-6 lg:p-8 space-y-5 sm:space-y-7 lg:space-y-8 max-w-screen-xl mx-auto">
+      <div className="p-3 sm:p-5 md:p-6 lg:p-8 space-y-5 sm:space-y-7 lg:space-y-8 max-w-screen-2xl mx-auto">
         {/* ── Page Header & Unified Search ── */}
         <motion.div
           {...fadeUp(0)}
@@ -345,14 +347,14 @@ export default function UserCoursesPage() {
             <div className="flex items-center gap-1.5 sm:gap-2 mb-1">
               <span className="w-2 h-2 rounded-full bg-[#5B21F4] animate-pulse" />
               <span className="text-[10px] sm:text-xs font-bold text-[#5B21F4] uppercase tracking-wider">
-                Academic Curriculum
+                Offline Curriculum
               </span>
             </div>
             <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold text-[#111827] tracking-tight">
-              {enrollments.length > 0 ? "My Enrolled Courses & Catalog" : "Course Catalog"}
+              {enrollments.length > 0 ? "My Enrolled Offline Courses & Catalog" : "Offline Courses Catalog"}
             </h1>
             <p className="text-xs sm:text-sm text-[#64748B] mt-0.5">
-              Explore industry-standard certifications, modules, syllabus details, and admission options.
+              Explore offline certifications, classroom modules, syllabus details, and center admissions.
             </p>
           </div>
 
@@ -414,7 +416,7 @@ export default function UserCoursesPage() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h2 className="text-base sm:text-lg lg:text-xl font-black text-[#111827]">
-                        My Enrolled Courses
+                        My Enrolled Offline Courses
                       </h2>
                       <Badge variant="default" className="text-[10px] sm:text-xs">
                         {enrollments.length} Active {enrollments.length === 1 ? "Course" : "Courses"}
@@ -470,7 +472,7 @@ export default function UserCoursesPage() {
 
               {/* Enrolled Course Cards */}
               {!isEnrLoading && !enrError && filteredEnrollments.length > 0 && (
-                <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 lg:gap-5">
+                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
                   {filteredEnrollments.map((enrollment, i) => {
                     const courseCode = enrollment.course_code || "COURSE";
                     const theme = getThemeForCode(courseCode);
@@ -486,6 +488,13 @@ export default function UserCoursesPage() {
                     const syllabusUrl = isExistingStudent
                       ? `/student/courses/${enrollment.course_id}`
                       : `/user/courses/${enrollment.course_id}`;
+
+                    const rawImg =
+                      (enrollment as any).course_img_path ||
+                      (enrollment as any).img_path ||
+                      (enrollment as any).course_image ||
+                      (enrollment as any).image;
+                    const resolvedImg = getCourseImageUrl(rawImg);
 
                     return (
                       <motion.div
@@ -508,9 +517,50 @@ export default function UserCoursesPage() {
                             }}
                           />
 
+                          {/* ── Top Course Image Banner ── */}
+                          <div className="relative aspect-[16/9] w-full bg-slate-900 overflow-hidden shrink-0">
+                            <CourseThumbnail
+                              src={resolvedImg}
+                              alt={courseName}
+                              courseCode={courseCode}
+                              courseName={courseName}
+                              isOnline={false}
+                              theme={theme}
+                            />
+
+                            {/* Format Badge (Top Left) */}
+                            <div className="absolute top-2 left-2 z-10 flex items-center">
+                              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-extrabold bg-blue-600/90 text-white backdrop-blur-md shadow-xs border border-blue-400/30 tracking-wide">
+                                Offline Course
+                              </span>
+                            </div>
+
+                            {/* Status Badge (Top Right) */}
+                            <div className="absolute top-2 right-2 z-10 flex items-center">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-extrabold backdrop-blur-md shadow-xs border ${
+                                  isFullyPaid
+                                    ? "bg-emerald-600/90 text-white border-emerald-400/30"
+                                    : "bg-emerald-600/90 text-white border-emerald-400/30"
+                                }`}
+                              >
+                                {status}
+                              </span>
+                            </div>
+
+                            {/* Course Code (Bottom Left) */}
+                            {enrollment.course_code && (
+                              <div className="absolute bottom-2 left-2 z-10 flex items-center">
+                                <span className="px-2 py-0.5 rounded-md text-[9px] sm:text-[10px] font-black bg-black/65 text-white backdrop-blur-md border border-white/20 uppercase tracking-wider shadow-xs">
+                                  {enrollment.course_code}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
                           {/* Header */}
-                          <CardHeader className="p-2.5 sm:p-4 lg:p-5 space-y-2">
-                            <div className="flex items-start justify-between gap-1.5 sm:gap-2">
+                          <CardHeader className="p-2.5 sm:p-4 space-y-1.5">
+                            <div className="hidden">
                               <div
                                 className="w-9 h-9 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 shadow-sm"
                                 style={{ backgroundColor: theme.bg, color: theme.color }}
@@ -687,7 +737,7 @@ export default function UserCoursesPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-base sm:text-lg lg:text-xl font-black text-[#111827]">
-                    All Courses
+                    All Offline Courses
                   </h2>
                   <Badge variant="blue" className="text-[10px] sm:text-xs">
                     {allCourses.length} Available {allCourses.length === 1 ? "Program" : "Programs"}
@@ -720,7 +770,7 @@ export default function UserCoursesPage() {
 
           {/* Catalog Skeletons (2 columns mobile, tablet & desktop; 3 columns XL) */}
           {isCatalogLoading && (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 lg:gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
               {[1, 2, 3, 4, 5, 6].map((i) => (
                 <Card key={i} className="p-3 sm:p-4 lg:p-5 space-y-3">
                   <div className="flex items-center justify-between">
@@ -743,7 +793,7 @@ export default function UserCoursesPage() {
 
           {/* Catalog Course Cards (Strictly grid-cols-2 on mobile, tablet & desktop; 3 on xl) */}
           {!isCatalogLoading && !catalogError && filteredCatalog.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 lg:gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
               {filteredCatalog.map((course, i) => {
                 const courseId = Number(course.course_id);
                 const isEnrolled = enrolledCourseIdSet.has(courseId);
@@ -826,19 +876,34 @@ export default function UserCoursesPage() {
 
                         {/* Title & Description */}
                         <div>
-                          <CardTitle className="line-clamp-2 text-xs sm:text-sm lg:text-base font-bold text-[#111827] leading-tight sm:leading-snug">
-                            {course.course_name}
-                          </CardTitle>
+                          <Link href={syllabusUrl} className="hover:text-[#5B21F4] transition-colors">
+                            <CardTitle className="line-clamp-2 text-xs sm:text-sm lg:text-base font-bold text-[#111827] leading-tight min-h-[2rem] sm:min-h-0">
+                              {course.course_name}
+                            </CardTitle>
+                          </Link>
 
-                          <CardDescription className="line-clamp-2 text-[11px] sm:text-xs text-[#64748B] mt-1 leading-relaxed">
+                          <CardDescription className="hidden sm:block line-clamp-2 text-[11px] sm:text-xs text-[#64748B] mt-1 leading-relaxed">
                             {course.course_description || "Comprehensive curriculum and practical modules"}
                           </CardDescription>
                         </div>
                       </CardHeader>
 
-                      <CardContent className="p-2.5 pt-0 sm:p-4 sm:pt-0 lg:p-5 lg:pt-0 space-y-2">
-                        {/* Duration & Modules Meta */}
-                        <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs text-[#64748B] pt-2 border-t border-[#F1F5F9] min-w-0">
+                      <CardContent className="p-2 sm:p-4 lg:p-5 pt-0 space-y-1.5 sm:space-y-2">
+                        {/* Mobile: Compact single-row duration & fee */}
+                        <div className="flex sm:hidden items-center justify-between text-[10px] text-[#64748B] pt-1.5 border-t border-[#F1F5F9]">
+                          {course.course_duration && (
+                            <span className="flex items-center gap-1 font-medium">
+                              <Clock className="w-3 h-3 text-[#5B21F4]" />
+                              {course.course_duration}
+                            </span>
+                          )}
+                          <span className="font-extrabold text-xs text-[#111827]">
+                            ₹{feeNum.toLocaleString("en-IN")}
+                          </span>
+                        </div>
+
+                        {/* Desktop: Duration & Modules Meta */}
+                        <div className="hidden sm:flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs text-[#64748B] pt-2 border-t border-[#F1F5F9] min-w-0">
                           {course.course_duration && (
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -870,24 +935,51 @@ export default function UserCoursesPage() {
                           )}
                         </div>
 
-                        {/* Fee Display */}
-                        <div className="pt-2 border-t border-[#F8FAFC] flex items-center justify-between min-w-0 gap-1 text-[11px] sm:text-xs">
-                          <span className="text-[#64748B] truncate text-[10px] sm:text-xs">
+                        {/* Desktop: Fee Display */}
+                        <div className="hidden sm:flex pt-2 border-t border-[#F8FAFC] items-center justify-between min-w-0 gap-1 text-[11px] sm:text-xs">
+                          <span className="text-[#64748B] truncate text-xs">
                             Tuition Fee:
                           </span>
-                          <span className="font-extrabold text-xs sm:text-sm text-[#111827] whitespace-nowrap shrink-0">
+                          <span className="font-extrabold text-sm text-[#111827] whitespace-nowrap shrink-0">
                             ₹{feeNum.toLocaleString("en-IN")}
                           </span>
                         </div>
                       </CardContent>
 
                       {/* Card Footer Actions */}
-                      <CardFooter className="p-2.5 pt-0 sm:p-4 sm:pt-0 lg:p-5 lg:pt-0 mt-auto">
-                        <div className="grid grid-cols-2 gap-1.5 sm:gap-2 w-full">
+                      <CardFooter className="p-2 sm:p-4 lg:p-5 pt-0 mt-auto">
+                        {/* Mobile: Single clean action button */}
+                        <div className="block sm:hidden w-full">
+                          {isEnrolled ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled
+                              className="w-full text-[10px] h-8 bg-emerald-50 text-emerald-700 border-emerald-200 font-bold shadow-none rounded-xl"
+                            >
+                              <CheckCircle2 className="size-3 mr-1 text-emerald-600" />
+                              <span>Enrolled</span>
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              className="w-full text-[11px] h-8 bg-[#5B21F4] hover:bg-[#4C1BD4] text-white font-bold rounded-xl"
+                              asChild
+                            >
+                              <Link href={getEnrollmentUrl(course.course_id)}>
+                                <span>Enroll Now</span>
+                                <ArrowRight className="size-3 ml-1" />
+                              </Link>
+                            </Button>
+                          )}
+                        </div>
+
+                        {/* Desktop: Two Button Actions */}
+                        <div className="hidden sm:grid grid-cols-2 gap-2 w-full">
                           <Button
                             variant="outline"
                             size="sm"
-                            className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9"
+                            className="w-full text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9"
                             asChild
                           >
                             <Link href={syllabusUrl}>
@@ -900,20 +992,20 @@ export default function UserCoursesPage() {
                               variant="outline"
                               size="sm"
                               disabled
-                              className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9 bg-emerald-50 text-emerald-700 border-emerald-200 opacity-90 cursor-not-allowed shadow-none"
+                              className="w-full text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9 bg-emerald-50 text-emerald-700 border-emerald-200 opacity-90 cursor-not-allowed shadow-none"
                             >
-                              <CheckCircle2 className="size-3 sm:size-3.5 shrink-0 text-emerald-600" />
+                              <CheckCircle2 className="size-3.5 mr-1 text-emerald-600" />
                               <span className="truncate">Enrolled</span>
                             </Button>
                           ) : (
                             <Button
                               size="sm"
-                              className="w-full text-[11px] sm:text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9"
+                              className="w-full text-xs lg:text-sm px-1.5 sm:px-3 h-8 sm:h-9 bg-[#5B21F4] hover:bg-[#4C1BD4] text-white"
                               asChild
                             >
                               <Link href={getEnrollmentUrl(course.course_id)}>
                                 <span className="truncate">Enroll Now</span>
-                                <ArrowRight className="size-3 sm:size-3.5 shrink-0 hidden sm:inline" />
+                                <ArrowRight className="size-3.5 ml-1" />
                               </Link>
                             </Button>
                           )}

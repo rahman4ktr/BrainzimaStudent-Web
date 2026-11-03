@@ -181,17 +181,7 @@ export default function UserProfilePage() {
           <h2 className="text-xl font-extrabold text-[#111827]">My Profile</h2>
           <p className="text-sm text-[#64748B] mt-0.5">Manage your personal information and credentials</p>
         </div>
-        <button
-          onClick={() => (editing ? handleSave() : setEditing(true))}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer ${
-            editing
-              ? "bg-[#08A66A] text-white shadow-md shadow-[#08A66A]/20 hover:bg-[#078957]"
-              : "bg-white border border-[#E2E8F0] text-[#5B21F4] hover:bg-[#F1EEFF]"
-          }`}
-        >
-          {editing ? <Save className="w-4 h-4" /> : <Edit3 className="w-4 h-4" />}
-          {editing ? "Save Changes" : "Edit Profile"}
-        </button>
+       
       </motion.div>
 
       {/* ── Save Success Toast ── */}

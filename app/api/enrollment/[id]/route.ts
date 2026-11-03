@@ -8,8 +8,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const PHP_API =
+  process.env.API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "https://try.ajitdev.com/brainzima/student/api";
+  "https://api.brainzima.com/student/api";
 
 interface RouteParams {
   params: Promise<{ id: string }> | { id: string };
@@ -53,9 +54,14 @@ export async function GET(req: NextRequest, context: RouteParams) {
       const totalPaid =
         e.total_paid !== undefined && e.total_paid !== null && e.total_paid !== ""
           ? Number(e.total_paid)
+          : e.total_successful_paid !== undefined && e.total_successful_paid !== null && e.total_successful_paid !== ""
+          ? Number(e.total_successful_paid)
           : e.summary?.total_paid !== undefined && e.summary?.total_paid !== null
           ? Number(e.summary.total_paid)
           : Math.max(rawInitial, rawTotalFee - rawDiscount - rawDues);
+
+      const computedDues = Math.max(0, rawTotalFee - rawDiscount - totalPaid);
+      const resolvedDues = rawDues > 0 ? Math.min(rawDues, computedDues) : computedDues;
 
       phpData.data = {
         ...e,
@@ -68,9 +74,9 @@ export async function GET(req: NextRequest, context: RouteParams) {
         initial_payment: rawInitial,
         total_paid: totalPaid,
         total_successful_paid: totalPaid,
-        stc_dues: rawDues,
-        dues: rawDues,
-        remaining_dues: rawDues,
+        stc_dues: resolvedDues,
+        dues: resolvedDues,
+        remaining_dues: resolvedDues,
         course_name: e.course_name || e.crs_name || "Enrolled Course",
         course_code: e.course_code || e.crs_code || "",
         student_id: Number(e.student_id ?? e.stc_st_id ?? e.st_id),

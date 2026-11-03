@@ -11,27 +11,67 @@ import {
   GraduationCap,
   LayoutDashboard,
   BookOpen,
+  BookMarked,
   UserCircle2,
   KeyRound,
   LogOut,
   X,
   Loader2,
+  Sparkles,
+  ChevronRight,
+  Bell,
+  QrCode,
+  FileText,
+  FolderOpen,
+  CreditCard,
+  Receipt,
+  Lock,
+  Award,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getSession } from "@/lib/session";
+import { getSession, getFileUrl, getInitials } from "@/lib/session";
+import { useAuth } from "@/context/AuthContext";
 
-const mobileNavItems = [
+interface MobileNavItem {
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  isPro?: boolean;
+}
+
+interface MobileNavGroup {
+  label: string;
+  items: MobileNavItem[];
+}
+
+const mobileNavItems: MobileNavGroup[] = [
   {
     label: "Main",
     items: [
       { href: "/user/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-      { href: "/user/courses", icon: BookOpen, label: "Courses" },
+      { href: "/user/id-card", icon: QrCode, label: "Digital ID Card", isPro: true },
+      { href: "/user/my-courses", icon: BookOpen, label: "My Courses", isPro: true },
+      { href: "/user/courses", icon: GraduationCap, label: "Offline Courses" },
+      { href: "/user/online-courses", icon: Sparkles, label: "Online Courses" },
+      { href: "/user/certificate", icon: Award, label: "Certificate" },
+      { href: "/user/notes", icon: FileText, label: "Notes & Materials", isPro: true },
+      { href: "/user/materials", icon: FolderOpen, label: "Study Materials", isPro: true },
+      { href: "/user/ebook-library", icon: BookMarked, label: "Ebook Library" },
+    ],
+  },
+  {
+    label: "Finance",
+    items: [
+      { href: "/user/fees", icon: CreditCard, label: "Fee Details", isPro: true },
+      { href: "/user/payments", icon: Receipt, label: "Payments", isPro: true },
     ],
   },
   {
     label: "Account",
     items: [
       { href: "/user/profile", icon: UserCircle2, label: "My Profile" },
+      { href: "/user/documents", icon: FolderOpen, label: "Documents", isPro: true },
+      { href: "/user/notifications", icon: Bell, label: "Offers & Alerts" },
       { href: "/user/change-password", icon: KeyRound, label: "Change Password" },
     ],
   },
@@ -42,6 +82,11 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
   const pathname = usePathname();
   const router = useRouter();
+  const { user } = useAuth();
+
+  const avatarUrl = getFileUrl(user?.user_image);
+  const initials = getInitials(user?.name);
+  const displayName = user?.name || "Ajit Kumar";
 
   useEffect(() => {
     const verifyUserSession = () => {
@@ -88,6 +133,16 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
     );
   }
 
+  // ── Dedicated Distraction-Free Full-Screen Examination Mode (No Sidebar, No Header, No BottomNav) ──
+  const isQuizMode = pathname?.includes("/quiz");
+  if (isQuizMode) {
+    return (
+      <div className="min-h-screen w-full bg-[#F8F6FD]">
+        {children}
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-[#F8FAFC] overflow-hidden">
       {/* ── Desktop Sidebar ── */}
@@ -99,7 +154,7 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
           onMobileMenuToggle={() => setMobileMenuOpen(!mobileMenuOpen)}
           mobileMenuOpen={mobileMenuOpen}
         />
-        <main className="flex-1 overflow-y-auto pb-20 lg:pb-0" id="user-main-content">
+        <main className="flex-1 overflow-y-auto pb-20 lg:pb-0 relative" id="user-main-content">
           {children}
         </main>
       </div>
@@ -126,11 +181,11 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
 
             <motion.aside
               key="user-drawer"
-              initial={{ x: "-100%" }}
+              initial={{ x: "100%" }}
               animate={{ x: 0 }}
-              exit={{ x: "-100%" }}
+              exit={{ x: "100%" }}
               transition={{ type: "spring", stiffness: 350, damping: 35 }}
-              className="lg:hidden fixed inset-y-0 left-0 z-50 w-72 bg-white flex flex-col shadow-2xl"
+              className="lg:hidden fixed inset-y-0 right-0 z-50 w-72 sm:w-80 bg-white flex flex-col shadow-2xl border-l border-[#E2E8F0]"
             >
               {/* Drawer Header */}
               <div className="flex items-center h-16 px-4 border-b border-[#E2E8F0] shrink-0">
@@ -159,12 +214,24 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
                   className="w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
                   style={{ background: "linear-gradient(135deg, #5B21F4, #2563EB)" }}
                 >
-                  AK
+                  {initials}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-sm font-bold text-[#111827] truncate">Ajit Kumar</p>
+                  <p className="text-sm font-bold text-[#111827] truncate">{displayName}</p>
                   <p className="text-[11px] text-[#64748B]">Prospective Student</p>
                 </div>
+              </div>
+
+              {/* Logout button directly below user info card */}
+              <div className="mx-3 mt-2 mb-2">
+                <Link
+                  href="/user/logout"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="flex items-center justify-center gap-1.5 w-full py-2 px-3 rounded-xl text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200/80 transition-all shadow-sm"
+                >
+                  <LogOut className="w-4 h-4 text-red-600" />
+                  <span>Logout</span>
+                </Link>
               </div>
 
               {/* Nav Groups */}
@@ -175,7 +242,15 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
                       {group.label}
                     </p>
                     {group.items.map((item) => {
-                      const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+                      const isActive =
+                        item.href === "/user/courses"
+                          ? pathname === "/user/courses" ||
+                            pathname.startsWith("/user/courses/") ||
+                            pathname === "/user/offline-courses" ||
+                            pathname.startsWith("/user/offline-courses/")
+                          : pathname === item.href ||
+                            (item.href !== "/user/dashboard" && pathname.startsWith(item.href + "/"));
+
                       return (
                         <Link
                           key={item.href}
@@ -184,7 +259,7 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
                           className={cn(
                             "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all relative",
                             isActive
-                              ? "bg-[#F1EEFF] text-[#5B21F4]"
+                              ? "bg-[#F1EEFF] text-[#5B21F4] font-semibold"
                               : "text-[#475569] hover:bg-[#F8FAFC] hover:text-[#111827]"
                           )}
                         >
@@ -197,25 +272,16 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
                               isActive ? "text-[#5B21F4]" : "text-[#94A3B8]"
                             )}
                           />
-                          {item.label}
+                          <span className="truncate">{item.label}</span>
+                          {item.isPro && (
+                            <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0 ml-auto" />
+                          )}
                         </Link>
                       );
                     })}
                   </div>
                 ))}
               </nav>
-
-              {/* Drawer Footer - Logout */}
-              <div className="border-t border-[#E2E8F0] p-3 shrink-0">
-                <Link
-                  href="/user/logout"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-[#EF4444] hover:bg-[#FEF2F2] transition-all"
-                >
-                  <LogOut className="w-5 h-5 shrink-0" />
-                  Logout
-                </Link>
-              </div>
             </motion.aside>
           </>
         )}

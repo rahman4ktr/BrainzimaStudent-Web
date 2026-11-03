@@ -1,14 +1,42 @@
 // app/api/document/student/[id]/route.ts
-// Proxy handler for student document paths to Brainzima PHP REST API backend
+// Proxy handler for student document uploads to Brainzima PHP REST API backend
+// Physical files are uploaded directly to PHP flat directories:
+// - docs_st_image         → uploads/images/students/
+// - docs_st_aadhaar_front → uploads/images/adharfront/
+// - docs_st_aadhaar_back  → uploads/images/adharback/
+// - docs_st_qualification → uploads/images/qualification/
+// MySQL bi_st_docs stores the canonical full public URL strings.
 
 import { NextRequest, NextResponse } from "next/server";
+import { toFullPublicUrl } from "@/lib/imageStorage";
 
 const PHP_API =
+  process.env.API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "https://try.ajitdev.com/brainzima/student/api";
+  "https://api.brainzima.com/student/api";
 
-import { promises as fs } from "fs";
-import path from "path";
+function normalizeDocData(docData: any) {
+  if (!docData || typeof docData !== "object") return docData;
+  const normalized = { ...docData };
+  if (normalized.user_image) {
+    normalized.user_image = toFullPublicUrl(normalized.user_image);
+  }
+  if (normalized.docs_st_image) {
+    normalized.docs_st_image = toFullPublicUrl(normalized.docs_st_image);
+  } else if (normalized.user_image) {
+    normalized.docs_st_image = normalized.user_image;
+  }
+  if (normalized.docs_st_aadhaar_front) {
+    normalized.docs_st_aadhaar_front = toFullPublicUrl(normalized.docs_st_aadhaar_front);
+  }
+  if (normalized.docs_st_aadhaar_back) {
+    normalized.docs_st_aadhaar_back = toFullPublicUrl(normalized.docs_st_aadhaar_back);
+  }
+  if (normalized.docs_st_qualification) {
+    normalized.docs_st_qualification = toFullPublicUrl(normalized.docs_st_qualification);
+  }
+  return normalized;
+}
 
 export async function GET(
   req: NextRequest,
@@ -18,52 +46,6 @@ export async function GET(
     const { id } = await params;
     const userId = req.headers.get("x-user-id");
     const userRole = req.headers.get("x-user-role") || "student";
-
-    const cleanId = id.replace(/^student-/, "").trim();
-    if (cleanId && userId) {
-      try {
-        const studentDir = path.join(process.cwd(), "public", "uploads", "students", cleanId);
-        const exts = [".jpg", ".jpeg", ".png", ".webp"];
-        let hasStudentPhoto = false;
-        for (const ext of exts) {
-          try {
-            await fs.access(path.join(studentDir, `profile${ext}`));
-            hasStudentPhoto = true;
-            break;
-          } catch {}
-        }
-        if (!hasStudentPhoto) {
-          const userDirs = [
-            path.join(process.cwd(), "public", "uploads", "users", `user-${userId}`),
-            path.join(process.cwd(), "public", "uploads", "users", String(userId)),
-          ];
-          for (const uDir of userDirs) {
-            for (const ext of exts) {
-              const uFile = path.join(uDir, `profile${ext}`);
-              try {
-                await fs.access(uFile);
-                await fs.mkdir(studentDir, { recursive: true });
-                await fs.copyFile(uFile, path.join(studentDir, `profile${ext}`));
-                const studentNamedDir = path.join(
-                  process.cwd(),
-                  "public",
-                  "uploads",
-                  "students",
-                  `student-${cleanId}`
-                );
-                await fs.mkdir(studentNamedDir, { recursive: true });
-                await fs.copyFile(uFile, path.join(studentNamedDir, `profile${ext}`));
-                hasStudentPhoto = true;
-                break;
-              } catch {}
-            }
-            if (hasStudentPhoto) break;
-          }
-        }
-      } catch {
-        // ignore sync check error
-      }
-    }
 
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -77,6 +59,35 @@ export async function GET(
     });
 
     const data = await res.json().catch(() => null);
+    if (data?.data) {
+      // If PHP returned student details without bi_st_docs fields, retrieve bi_st_docs record
+      if (
+        data.data.user_image &&
+        !("docs_st_aadhaar_front" in data.data) &&
+        !("docs_st_qualification" in data.data)
+      ) {
+        try {
+          const docRes = await fetch(`${PHP_API}/document/student/${id}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              ...(userId ? { "X-User-Id": userId } : {}),
+              ...(userRole ? { "X-User-Role": userRole } : {}),
+            },
+            body: JSON.stringify({ docs_st_image: data.data.user_image }),
+          });
+          const docJson = await docRes.json().catch(() => null);
+          if (docJson?.success && docJson?.data) {
+            data.data = { ...data.data, ...docJson.data };
+          }
+        } catch {
+          /* ignore fallback */
+        }
+      }
+
+      data.data = normalizeDocData(data.data);
+    }
     return NextResponse.json(data, { status: res.status });
   } catch (error: any) {
     console.error("[Document API] GET error:", error);
@@ -93,9 +104,79 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const body = await req.json().catch(() => ({}));
     const userId = req.headers.get("x-user-id");
     const userRole = req.headers.get("x-user-role") || "student";
+
+    const contentType = req.headers.get("content-type") || "";
+
+    // ── 1. Multipart/form-data File Upload Forwarding ─────────────────────────
+    if (contentType.includes("multipart/form-data")) {
+      const incomingFormData = await req.formData();
+      const outgoingFormData = new FormData();
+
+      for (const [key, value] of incomingFormData.entries()) {
+        if (value && typeof value === "object" && typeof (value as any).arrayBuffer === "function") {
+          const file = value as File;
+          const bytes = await file.arrayBuffer();
+          const blob = new Blob([bytes], { type: file.type || "application/octet-stream" });
+          outgoingFormData.append(key, blob, file.name);
+        } else {
+          outgoingFormData.append(key, String(value));
+        }
+      }
+
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+      };
+      if (userId) headers["X-User-Id"] = userId;
+      if (userRole) headers["X-User-Role"] = userRole;
+
+      const res = await fetch(`${PHP_API}/document/student/${id}`, {
+        method: "POST",
+        headers,
+        body: outgoingFormData,
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (data?.data) {
+        data.data = normalizeDocData(data.data);
+
+        // Ensure full URL strings are stored in MySQL
+        const syncPayload: Record<string, string> = {};
+        for (const field of [
+          "docs_st_image",
+          "docs_st_aadhaar_front",
+          "docs_st_aadhaar_back",
+          "docs_st_qualification",
+        ]) {
+          if (data.data[field]) {
+            syncPayload[field] = data.data[field];
+          }
+        }
+        if (Object.keys(syncPayload).length > 0) {
+          try {
+            await fetch(`${PHP_API}/document/student/${id}`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+                ...(userId ? { "X-User-Id": userId } : {}),
+                ...(userRole ? { "X-User-Role": userRole } : {}),
+              },
+              body: JSON.stringify(syncPayload),
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      return NextResponse.json(data, { status: res.status });
+    }
+
+    // ── 2. JSON Path Strings Forwarding ───────────────────────────────────────
+    const body = await req.json().catch(() => ({}));
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -104,7 +185,6 @@ export async function POST(
     if (userId) headers["X-User-Id"] = userId;
     if (userRole) headers["X-User-Role"] = userRole;
 
-    // Requirement 10: Sanitize body — omit or send null, never create "undefined" or "null" string
     const cleanBody: Record<string, any> = {};
     const validFields = [
       "docs_st_image",
@@ -128,7 +208,7 @@ export async function POST(
           ) {
             cleanBody[key] = null;
           } else {
-            cleanBody[key] = trimmed;
+            cleanBody[key] = toFullPublicUrl(trimmed);
           }
         }
       }
@@ -141,6 +221,9 @@ export async function POST(
     });
 
     const data = await res.json().catch(() => null);
+    if (data?.data) {
+      data.data = normalizeDocData(data.data);
+    }
     return NextResponse.json(data, { status: res.status });
   } catch (error: any) {
     console.error("[Document API] POST error:", error);
@@ -149,4 +232,18 @@ export async function POST(
       { status: 500 }
     );
   }
+}
+
+export async function PUT(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  return POST(req, context);
+}
+
+export async function PATCH(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  return POST(req, context);
 }

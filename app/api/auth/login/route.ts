@@ -7,10 +7,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeEmail, getUserOtpState } from "@/lib/otpStore";
 import { getClientIp, getCurrentSqlDateTime, formatIstDateTime } from "@/lib/utils";
+import { toFullPublicUrl } from "@/lib/imageStorage";
+import { fetchStudentDocumentsHelper } from "@/lib/studentDocuments";
 
 const PHP_API =
+  process.env.API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "https://try.ajitdev.com/brainzima/student/api";
+  "https://api.brainzima.com/student/api";
 
 export async function POST(req: NextRequest) {
   try {
@@ -161,6 +164,97 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // ── Resolve accurate registration_number, DOB & Student Documents ──
+        let resolvedRegNo: string | null = null;
+        let studentDob: string | null = null;
+        let studentDocs: {
+          docs_st_image?: string | null;
+          docs_st_aadhaar_front?: string | null;
+          docs_st_aadhaar_back?: string | null;
+          docs_st_qualification?: string | null;
+        } | null = null;
+
+        if (isStudent && studentId) {
+          try {
+            const [enrCheckRes, stProfileRes, docCheckRes] = await Promise.allSettled([
+              fetch(`${PHP_API}/enrollment`, {
+                headers: {
+                  Accept: "application/json",
+                  "X-User-Id": String(userId),
+                  "X-User-Role": "student",
+                  "X-Student-Id": String(studentId),
+                },
+              }),
+              fetch(`${PHP_API}/student/me`, {
+                headers: {
+                  Accept: "application/json",
+                  "X-User-Id": String(userId),
+                  "X-User-Role": "student",
+                },
+              }),
+              fetch(`${PHP_API}/document/student/${studentId}`, {
+                headers: {
+                  Accept: "application/json",
+                  "X-User-Id": String(userId),
+                  "X-User-Role": "student",
+                },
+              }),
+            ]);
+
+            // Check enrollment payment for registration number
+            if (enrCheckRes.status === "fulfilled" && enrCheckRes.value.ok) {
+              const enrCheckJson = await enrCheckRes.value.json().catch(() => null);
+              const enrs: any[] = Array.isArray(enrCheckJson?.data)
+                ? enrCheckJson.data
+                : Array.isArray(enrCheckJson?.data?.enrollments)
+                ? enrCheckJson.data.enrollments
+                : [];
+              const hasPaid = enrs.some(
+                (e: any) =>
+                  Number(e.stc_initial_payment || 0) > 0 ||
+                  Number(e.total_paid || 0) > 0
+              );
+              if (hasPaid) {
+                resolvedRegNo = `BISR${String(studentId).padStart(4, "0")}`;
+              } else if (enrs.length > 0) {
+                resolvedRegNo = null;
+              } else {
+                resolvedRegNo = `BISR${String(studentId).padStart(4, "0")}`;
+              }
+            } else {
+              resolvedRegNo = `BISR${String(studentId).padStart(4, "0")}`;
+            }
+
+            // Extract student profile data (DOB, etc.)
+            if (stProfileRes.status === "fulfilled" && stProfileRes.value.ok) {
+              const stJson = await stProfileRes.value.json().catch(() => null);
+              if (stJson?.data) {
+                studentDob = stJson.data.st_dob || stJson.data.dob || null;
+              }
+            }
+
+            // Extract student document paths
+            const docs = await fetchStudentDocumentsHelper(
+              studentId,
+              userId,
+              "student",
+              resolvedImage
+            );
+            if (docs) {
+              studentDocs = {
+                docs_st_image: docs.docs_st_image || resolvedImage || null,
+                docs_st_aadhaar_front: docs.docs_st_aadhaar_front || null,
+                docs_st_aadhaar_back: docs.docs_st_aadhaar_back || null,
+                docs_st_qualification: docs.docs_st_qualification || null,
+              };
+            }
+          } catch {
+            resolvedRegNo = `BISR${String(studentId).padStart(4, "0")}`;
+          }
+        }
+
+        const resolvedDocImage = studentDocs?.docs_st_image || resolvedImage;
+
         const completeData = {
           user_id: userId,
           name: rawUser.name || userDetails?.name || "User",
@@ -169,13 +263,20 @@ export async function POST(req: NextRequest) {
           role: resolvedRole === "" ? "user" : resolvedRole,
           is_student: isStudent,
           student_id: studentId,
-          registration_number:
-            rawUser.registration_number ?? userDetails?.registration_number ?? null,
+          registration_number: resolvedRegNo,
           centre_id: rawUser.centre_id ?? userDetails?.centre_id ?? null,
-          user_image: resolvedImage,
+          user_image: resolvedDocImage,
           user_verified: 1,
           last_login_at: formatIstDateTime(currentSqlTime),
           last_login_ip: clientIp,
+          // Stored in session for student:
+          dob: studentDob,
+          st_dob: studentDob,
+          docs_st_image: resolvedDocImage,
+          docs_st_aadhaar_front: studentDocs?.docs_st_aadhaar_front || null,
+          docs_st_aadhaar_back: studentDocs?.docs_st_aadhaar_back || null,
+          docs_st_qualification: studentDocs?.docs_st_qualification || null,
+          documents: studentDocs || (resolvedDocImage ? { docs_st_image: resolvedDocImage } : null),
         };
 
         return NextResponse.json(

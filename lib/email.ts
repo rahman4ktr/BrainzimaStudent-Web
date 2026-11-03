@@ -958,3 +958,190 @@ export async function sendPaymentConfirmationEmail(
   return { success: false, error: lastError?.message || "Delivery failed" };
 }
 
+// ── Password Reset OTP Email Template ──────────────────────────────────────
+function buildPasswordResetEmailHtml(name: string, otp: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Brainzima Password Reset OTP</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #F8FAFC; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #111827; }
+  .wrapper { max-width: 560px; margin: 40px auto; padding: 0 16px; }
+  .card { background: #ffffff; border-radius: 20px; border: 1px solid #E2E8F0; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.07); }
+  .header { background: linear-gradient(135deg, #5B21F4 0%, #7C3AED 55%, #2563EB 100%); padding: 32px 32px 28px; text-align: center; }
+  .logo { display: inline-flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 44px; height: 44px; background: rgba(255,255,255,0.2); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .logo-text { color: #ffffff; font-size: 22px; font-weight: 900; letter-spacing: -0.5px; }
+  .logo-sub { color: rgba(255,255,255,0.7); font-size: 11px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; margin-top: 1px; }
+  .body { padding: 36px 32px; }
+  .greeting { font-size: 18px; font-weight: 700; color: #111827; margin-bottom: 12px; }
+  .message { font-size: 14px; color: #475569; line-height: 1.7; margin-bottom: 28px; }
+  .otp-section { text-align: center; margin: 0 0 28px; }
+  .otp-label { font-size: 12px; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 14px; }
+  .otp-code { display: inline-block; font-size: 40px; font-weight: 900; letter-spacing: 10px; color: #5B21F4; background: #F1EEFF; border: 2px solid #DDD6FE; border-radius: 16px; padding: 16px 28px; font-family: 'Courier New', monospace; }
+  .validity { text-align: center; background: #FFFBEB; border: 1px solid #FEF3C7; border-radius: 12px; padding: 12px 16px; margin-bottom: 24px; }
+  .validity p { font-size: 13px; color: #92400E; font-weight: 600; }
+  .validity span { color: #D97706; font-weight: 700; }
+  .divider { height: 1px; background: #F1F5F9; margin: 0 0 24px; }
+  .footer-note { font-size: 12px; color: #94A3B8; line-height: 1.6; text-align: center; }
+  .footer { background: #F8FAFC; border-top: 1px solid #E2E8F0; padding: 20px 32px; text-align: center; }
+  .footer p { font-size: 12px; color: #94A3B8; }
+  .footer strong { color: #5B21F4; }
+</style>
+</head>
+<body>
+<div class="wrapper">
+  <div class="card">
+    <div class="header">
+      <div class="logo">
+        <div class="logo-icon">🔒</div>
+        <div>
+          <div class="logo-text">Brainzima</div>
+          <div class="logo-sub">Password Reset</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="body">
+      <p class="greeting">Hello ${name},</p>
+      <p class="message">
+        We received a request to reset your Brainzima account password. Your password reset One-Time Password (OTP) is:
+      </p>
+
+      <div class="otp-section">
+        <p class="otp-label">Password Reset Code</p>
+        <div class="otp-code">${otp}</div>
+      </div>
+
+      <div class="validity">
+        <p>⏱ This OTP will expire in <span>10 minutes</span>.</p>
+      </div>
+
+      <div class="divider"></div>
+
+      <p class="footer-note">
+        If you did not request a password reset, please ignore this email. Your password will remain unchanged and your account is secure.
+      </p>
+    </div>
+
+    <div class="footer">
+      <p>© 2026 <strong>Brainzima</strong> Student Management System</p>
+      <p style="margin-top: 4px;">Need help? Contact <a href="mailto:support@brainzima.com" style="color:#2563EB;">support@brainzima.com</a></p>
+    </div>
+  </div>
+
+  <p style="text-align:center; font-size:11px; color:#CBD5E1; margin-top:16px;">
+    This is an automated security message. Please do not reply to this email.
+  </p>
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * Send Password Reset OTP Email adhering strictly to specification:
+ * Subject: Brainzima Password Reset OTP
+ * Text:
+ * Hello {name},
+ *
+ * Your Brainzima password reset OTP is:
+ *
+ * 123456
+ *
+ * This OTP will expire in 10 minutes.
+ *
+ * If you did not request a password reset, please ignore this email.
+ */
+export async function sendPasswordResetOtpEmail(params: {
+  to: string;
+  name: string;
+  otp: string;
+}): Promise<void> {
+  const config = getCleanSmtpConfig();
+
+  if (!config.configured) {
+    const error: any = new Error(
+      "Email configuration missing: SMTP credentials are not set."
+    );
+    error.code = "ECONFIG";
+    error.isConfigError = true;
+    throw error;
+  }
+
+  const subject = "Brainzima Password Reset OTP";
+  const textBody =
+    `Hello ${params.name},\n\n` +
+    `Your Brainzima password reset OTP is:\n\n` +
+    `${params.otp}\n\n` +
+    `This OTP will expire in 10 minutes.\n\n` +
+    `If you did not request a password reset, please ignore this email.\n\n` +
+    `Brainzima Student Management System`;
+
+  const mailOptions: any = {
+    from: `"${config.fromName}" <${config.fromEmail}>`,
+    to: params.to,
+    replyTo: config.fromEmail,
+    subject,
+    html: buildPasswordResetEmailHtml(params.name, params.otp),
+    text: textBody,
+    priority: "high",
+    headers: {
+      "X-Priority": "1",
+      "X-MSMail-Priority": "High",
+      Importance: "high",
+    },
+  };
+
+  let lastError: any = null;
+
+  try {
+    const primaryTransporter = createTransporter();
+    await primaryTransporter.sendMail(mailOptions);
+    console.info(
+      `[Brainzima SMTP] Password reset OTP email dispatched successfully to ${maskEmail(params.to)}`
+    );
+    return;
+  } catch (err: any) {
+    lastError = err;
+    console.warn(
+      `[Brainzima SMTP] Primary transporter failed for reset email (${err?.message}). Trying fallback transport...`
+    );
+  }
+
+  if (config.isGmail) {
+    try {
+      const fallbackTransporter = createTransporter({ useGmailService: true });
+      await fallbackTransporter.sendMail(mailOptions);
+      console.info(
+        `[Brainzima SMTP] Password reset OTP sent via Gmail service fallback to ${maskEmail(params.to)}`
+      );
+      return;
+    } catch (fbErr: any) {
+      lastError = fbErr;
+    }
+  }
+
+  try {
+    const altPort = config.port === 465 ? 587 : 465;
+    const altTransporter = createTransporter({ alternatePort: altPort });
+    await altTransporter.sendMail(mailOptions);
+    console.info(
+      `[Brainzima SMTP] Password reset OTP sent via alternate port ${altPort} to ${maskEmail(params.to)}`
+    );
+    return;
+  } catch (altErr: any) {
+    lastError = altErr;
+  }
+
+  console.error("[Password Reset Email Error]", {
+    recipient: maskEmail(params.to),
+    error: lastError?.message,
+  });
+
+  throw lastError || new Error("Failed to send password reset OTP email.");
+}
+
+

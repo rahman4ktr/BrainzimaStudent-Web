@@ -1,0 +1,340 @@
+[
+  {
+    "result_id": 1,
+    "std_id": 48,
+    "user_id": 85,
+    "course_id": 1,
+    "marks": 2,
+    "created_at": "2026-10-27 11:03:06",
+    "updated_at": "2026-10-27 11:03:06",
+    "extra": {
+      "total_questions": 50,
+      "correct": 1,
+      "wrong": 49,
+      "unanswered": 46,
+      "marks_per_question": 2,
+      "total_marks": 100,
+      "percentage": 2,
+      "passed": false,
+      "duration_minutes": 1,
+      "time_spent_seconds": 38,
+      "completed_at": "2026-10-27T11:03:05.951Z",
+      "attempt": 1,
+      "max_attempts": 3,
+      "attempts_history": [
+        {
+          "attempt": 1,
+          "marks": 2,
+          "percentage": 2,
+          "correct": 1,
+          "date": "2026-10-27 11:03:06"
+        }
+      ]
+    },
+    "st_name": "2  test",
+    "st_regno": "BISR0048",
+    "course_name": "Advanced Diploma in Computer Applications",
+    "course_code": "ADCA"
+  },
+  {
+    "result_id": 7,
+    "std_id": 49,
+    "user_id": 86,
+    "course_id": 2,
+    "marks": 6,
+    "created_at": "2026-10-29 10:06:52",
+    "updated_at": "2026-10-30 13:59:52",
+    "extra": {
+      "total_questions": 50,
+      "correct_count": 3,
+      "wrong_count": 47,
+      "percentage": 6,
+      "grade": "F",
+      "status": "FAILED",
+      "passed": false,
+      "attempt": 3,
+      "time_spent_seconds": 2343,
+      "time_spent_formatted": "39m 3s",
+      "submitted_at": "2026-10-30T13:59:52.207Z",
+      "course_name": "Advanced Diploma in Computer Applications Plus",
+      "answer_breakdown": {
+        "42": {
+          "selected": 0,
+          "correct": 4,
+          "isCorrect": false
+        },
+        "44": {
+          "selected": 3,
+          "correct": 3,
+          "isCorrect": true
+        },
+        "46": {
+          "selected": 0,
+          "correct": 4,
+          "isCorrect": false
+        },
+        "48": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "50": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "51": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "52": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "56": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "58": {
+          "selected": 0,
+          "correct": 4,
+          "isCorrect": false
+        },
+        "59": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "60": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "62": {
+          "selected": 0,
+          "correct": 4,
+          "isCorrect": false
+        },
+        "64": {
+          "selected": 3,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "65": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "73": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "79": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "219": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "220": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "221": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "222": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "224": {
+          "selected": 4,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "226": {
+          "selected": 3,
+          "correct": 3,
+          "isCorrect": true
+        },
+        "227": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "228": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "229": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "230": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "234": {
+          "selected": 3,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "235": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "237": {
+          "selected": 2,
+          "correct": 2,
+          "isCorrect": true
+        },
+        "240": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "243": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "244": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "245": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "248": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "249": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "252": {
+          "selected": 0,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "254": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "255": {
+          "selected": 1,
+          "correct": 3,
+          "isCorrect": false
+        },
+        "256": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "258": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "259": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "260": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "261": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "262": {
+          "selected": 0,
+          "correct": 2,
+          "isCorrect": false
+        },
+        "266": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "267": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "268": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "272": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "276": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        },
+        "280": {
+          "selected": 0,
+          "correct": 1,
+          "isCorrect": false
+        }
+      },
+      "max_attempts": 3,
+      "attempts_history": [
+        {
+          "attempt": 1,
+          "marks": 2,
+          "percentage": 2,
+          "correct": 1,
+          "date": "2026-10-29 10:06:52"
+        },
+        {
+          "attempt": 2,
+          "marks": 0,
+          "percentage": 0,
+          "date": "2026-10-30 11:36:51"
+        },
+        {
+          "attempt": 3,
+          "marks": 6,
+          "percentage": 6,
+          "date": "2026-10-30 13:59:52"
+        }
+      ]
+    },
+    "st_name": "like",
+    "st_regno": "BISR0049",
+    "course_name": "Advanced Diploma in Computer Applications Plus",
+    "course_code": "ADCA+"
+  }
+]

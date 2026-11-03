@@ -9,6 +9,7 @@ import {
   BookOpen,
   UserCircle2,
   Settings,
+  Bell,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -21,7 +22,7 @@ const bottomNavItems = [
   { href: "/user/dashboard", icon: LayoutDashboard, label: "Home" },
   { href: "/user/courses", icon: BookOpen, label: "Courses" },
   { href: "/user/profile", icon: UserCircle2, label: "Profile" },
-];
+]; 
 
 export default function UserBottomNav({
   onSidebarToggle,
@@ -45,7 +46,11 @@ export default function UserBottomNav({
         {bottomNavItems.map((item) => {
           const isActive =
             !isSidebarOpen &&
-            (pathname === item.href || pathname.startsWith(item.href + "/"));
+            (item.href === "/user/courses"
+              ? pathname.startsWith("/user/courses") ||
+                pathname.startsWith("/user/online-courses") ||
+                pathname.startsWith("/online-courses")
+              : pathname === item.href || pathname.startsWith(item.href + "/"));
           return (
             <Link
               key={item.href}

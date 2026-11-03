@@ -11,14 +11,23 @@ import {
   ChevronRight,
   CheckCircle2,
   FileText,
-  Download,
   AlertCircle,
   Loader2,
   Award,
   Sparkles,
   CreditCard,
+  GraduationCap,
+  ShieldCheck,
+  Languages,
+  Building2,
+  ArrowRight,
 } from "lucide-react";
-import { getCourseById, type Course } from "@/lib/api";
+import { getCourseById, getCurrentStudent, getStudentEnrollments, type Course, type EnrollmentItem } from "@/lib/api";
+import { getCourseImageUrl, getSession } from "@/lib/session";
+import { useStudent } from "@/hooks/useStudent";
+import { useEnrollmentRoute } from "@/hooks/useEnrollmentRoute";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 16 },
@@ -33,10 +42,15 @@ export default function StudentCourseDetailPage({
 }) {
   const resolvedParams = use(params);
   const courseId = resolvedParams.courseId;
+  const { getEnrollmentUrl } = useEnrollmentRoute();
+  const { user_id, student_id } = useStudent();
 
   const [course, setCourse] = useState<Course | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [imageError, setImageError] = useState(false);
+  const [isEnrolled, setIsEnrolled] = useState(false);
+  const [matchingEnrollment, setMatchingEnrollment] = useState<EnrollmentItem | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -64,10 +78,72 @@ export default function StudentCourseDetailPage({
     };
   }, [courseId]);
 
+  // Check if current authenticated student is enrolled in this offline course
+  useEffect(() => {
+    let active = true;
+
+    async function checkEnrollment() {
+      const session = getSession();
+      const currentUserId = user_id || (session?.user_id ? Number(session.user_id) : 0);
+      const currentStudentId = student_id || (session?.student_id ? Number(session.student_id) : 0);
+
+      if (!currentUserId && !currentStudentId) {
+        if (active) setIsEnrolled(false);
+        return;
+      }
+
+      try {
+        const [meRes, enrRes] = await Promise.allSettled([
+          currentUserId ? getCurrentStudent(currentUserId) : Promise.resolve(null),
+          currentUserId ? getStudentEnrollments(currentUserId, currentStudentId, "student") : Promise.resolve(null),
+        ]);
+
+        const allCandidates: any[] = [];
+
+        if (meRes.status === "fulfilled" && meRes.value?.success && meRes.value?.data) {
+          const d = meRes.value.data;
+          if (Array.isArray(d.offline_courses)) allCandidates.push(...d.offline_courses);
+          if (Array.isArray(d.courses)) allCandidates.push(...d.courses);
+          if (Array.isArray(d.enrolled_courses)) allCandidates.push(...d.enrolled_courses);
+        }
+
+        if (enrRes.status === "fulfilled" && enrRes.value?.success && enrRes.value?.data) {
+          const d = enrRes.value.data;
+          const list = Array.isArray(d) ? d : (d as any).enrollments || [];
+          if (Array.isArray(list)) allCandidates.push(...list);
+        }
+
+        const match = allCandidates.find(
+          (e: any) =>
+            Number(e.course_id ?? e.stc_course_id) === Number(courseId) ||
+            (course?.course_code &&
+              String(e.course_code || "").trim().toLowerCase() === String(course.course_code).trim().toLowerCase())
+        );
+
+        if (active) {
+          if (match) {
+            setIsEnrolled(true);
+            setMatchingEnrollment(match);
+          } else {
+            setIsEnrolled(false);
+            setMatchingEnrollment(null);
+          }
+        }
+      } catch (err) {
+        console.warn("[StudentCourseDetail] Enrollment check notice:", err);
+      }
+    }
+
+    checkEnrollment();
+    return () => {
+      active = false;
+    };
+  }, [courseId, user_id, student_id, course?.course_code]);
+
   if (isLoading) {
     return (
       <div className="min-h-[70vh] flex flex-col items-center justify-center p-6 text-center">
-        <Loader2 className="w-8 h-8 text-[#5B21F4] animate-spin mb-3" />
+        <Loader2 className="w-8 h-8 text-[#0B3B82] animate-spin mb-3" />
         <p className="text-sm font-semibold text-[#64748B]">Loading course details...</p>
       </div>
     );
@@ -83,7 +159,7 @@ export default function StudentCourseDetailPage({
         <p className="text-sm text-[#64748B]">{error || "Could not retrieve course record."}</p>
         <Link
           href="/student/courses"
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#5B21F4] text-white text-xs font-bold hover:bg-[#4C1BD4] transition-colors"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0B3B82] text-white text-xs font-bold hover:bg-[#072B60] transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
           Back to Courses
@@ -99,207 +175,307 @@ export default function StudentCourseDetailPage({
         .filter(Boolean)
     : [];
 
-  const feeFormatted = `₹${Number(course.course_fee).toLocaleString("en-IN")}`;
+  const feeNum = Number(course.course_fee || 0);
+  const originalFee = feeNum > 0 ? Math.round((feeNum * 1.35) / 100) * 100 : 0;
+  const discountPercent = originalFee > 0 ? Math.round(((originalFee - feeNum) / originalFee) * 100) : 0;
+  const resolvedImageUrl = getCourseImageUrl(course.course_img_path);
 
   return (
-    <div className="p-4 md:p-6 lg:p-8 space-y-6 max-w-screen-xl mx-auto">
+    <div className="p-4 md:p-6 lg:p-8 space-y-6 max-w-screen-2xl mx-auto">
       {/* ── Breadcrumb Navigation ── */}
-      <motion.div {...fadeUp(0)} className="flex items-center gap-2 text-xs text-[#64748B]">
-        <Link
-          href="/student/courses"
-          className="inline-flex items-center gap-1.5 font-semibold text-[#5B21F4] hover:underline"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" />
-          Courses
-        </Link>
-        <ChevronRight className="w-3.5 h-3.5 text-[#CBD5E1]" />
-        <span className="text-[#111827] font-bold truncate max-w-[200px] sm:max-w-none">
-          {course.course_name}
-        </span>
-      </motion.div>
-
-      {/* ── Hero Banner ── */}
-      <motion.div
-        {...fadeUp(0.05)}
-        className="rounded-3xl p-6 sm:p-8 relative overflow-hidden text-white"
-        style={{
-          background: "linear-gradient(135deg, #1E1B4B 0%, #312E81 50%, #4338CA 100%)",
-        }}
-      >
-        <div className="absolute -top-12 -right-12 w-64 h-64 rounded-full bg-white/5 pointer-events-none" />
-
-        <div className="relative z-10 max-w-3xl space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="px-3 py-1 rounded-full text-xs font-bold bg-[#5B21F4] text-white shadow-sm">
-              {course.course_code}
-            </span>
-            <span className="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-              {course.course_status === "active" ? "Official Curriculum" : course.course_status}
-            </span>
-          </div>
-
-          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight leading-tight">
-            {course.course_name}
-          </h1>
-
-          <p className="text-sm sm:text-base text-slate-300 leading-relaxed">
-            {course.course_description ||
-              "Structured curriculum designed for practical proficiency and job-ready industry skills."}
-          </p>
-
-          <div className="pt-2 flex flex-wrap items-center gap-4 text-xs sm:text-sm text-slate-200">
-            <div className="flex items-center gap-2 bg-white/10 px-3.5 py-1.5 rounded-xl backdrop-blur-sm">
-              <Clock className="w-4 h-4 text-amber-300" />
-              <span>Duration: {course.course_duration}</span>
-            </div>
-            <div className="flex items-center gap-2 bg-white/10 px-3.5 py-1.5 rounded-xl backdrop-blur-sm">
-              <Layers className="w-4 h-4 text-cyan-300" />
-              <span>{modules.length} Core Modules</span>
-            </div>
-            <div className="flex items-center gap-2 bg-white/10 px-3.5 py-1.5 rounded-xl backdrop-blur-sm">
-              <Award className="w-4 h-4 text-emerald-300" />
-              <span>Official Certification</span>
-            </div>
-          </div>
-        </div>
-      </motion.div>
-
-      {/* ── Main Content Grid ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: Syllabus Modules */}
-        <div className="lg:col-span-2 space-y-6">
-          <motion.div
-            {...fadeUp(0.1)}
-            className="bg-white rounded-2xl border border-[#E2E8F0] p-6 space-y-4"
+      <motion.div {...fadeUp(0)} className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 text-xs text-[#64748B]">
+          <Link
+            href="/student/offline-courses"
+            className="inline-flex items-center gap-1.5 font-bold text-[#0B3B82] hover:underline"
           >
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-[#111827]">Syllabus Modules</h2>
-                <p className="text-xs text-[#64748B]">
-                  Topics covered in {course.course_code} batches
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Offline Courses</span>
+          </Link>
+          <ChevronRight className="w-3.5 h-3.5 text-[#CBD5E1]" />
+          <span className="text-[#111827] font-semibold truncate max-w-[200px] sm:max-w-none">
+            {course.course_name}
+          </span>
+        </div>
+
+        {/* Enrollment Status Badge */}
+        {isEnrolled && (
+          <Badge
+            variant="default"
+            className="bg-emerald-600 hover:bg-emerald-700 text-xs py-1 px-3 gap-1.5 shadow-xs text-white font-bold"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>Enrolled &amp; Active</span>
+          </Badge>
+        )}
+      </motion.div>
+
+      {/* Main Top Header: "Description" */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl sm:text-2xl lg:text-3xl font-black text-slate-900 tracking-tight">
+          Description
+        </h1>
+      </div>
+
+      {/* ── Main 2-Column Grid (Khan Global Studies UX) ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left Column (8 cols): Description + Syllabus Modules */}
+        <div className="lg:col-span-8 space-y-6">
+          {/* 1. Description Card */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 shadow-2xs space-y-5">
+            <div>
+              <h2 className="text-base sm:text-lg font-black text-slate-900 leading-snug">
+                {course.course_name} – Build Strong Basics &amp; Hands-on Mastery
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed mt-2.5">
+                {course.course_description ||
+                  `The ${course.course_name} is specially designed for students seeking in-depth practical training and recognized diploma certification. This course focuses on building a strong foundation using modern labs and industry standards.`}
+              </p>
+            </div>
+
+            <div className="pt-1">
+              <h3 className="text-xs sm:text-sm font-bold text-slate-900 underline underline-offset-4 decoration-slate-300">
+                About the Course :
+              </h3>
+              <div className="mt-2.5 space-y-2 text-xs sm:text-sm text-slate-600 leading-relaxed">
+                <p>
+                  Brainzima Institute brings you an intensive classroom curriculum to help you achieve practical proficiency in {course.course_name}.
+                </p>
+                <p>
+                  Classes are conducted by experienced faculty with interactive lab sessions, continuous practical assessments, and personalized mentor guidance.
                 </p>
               </div>
-              <span className="text-xs font-bold text-[#5B21F4] bg-[#F1EEFF] px-2.5 py-1 rounded-lg">
-                {modules.length} Modules
-              </span>
             </div>
 
-            <div className="space-y-3 pt-2">
-              {modules.map((mod, index) => (
-                <div
-                  key={index}
-                  className="p-4 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] hover:bg-white hover:border-[#5B21F4]/40 hover:shadow-sm transition-all group flex items-start gap-3.5"
-                >
-                  <div className="w-8 h-8 rounded-lg bg-white border border-[#E2E8F0] flex items-center justify-center font-bold text-xs text-[#5B21F4] shrink-0 group-hover:bg-[#5B21F4] group-hover:text-white transition-colors">
-                    {index + 1}
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="text-sm font-bold text-[#111827]">{mod}</h3>
-                    <p className="text-[11px] text-[#64748B] mt-0.5">
-                      Lectures, hands-on lab exercises, and practical assessment questions.
-                    </p>
-                  </div>
-                  <CheckCircle2 className="w-4 h-4 text-[#08A66A] shrink-0 mt-1" />
-                </div>
-              ))}
+            <div className="pt-1">
+              <h3 className="text-xs sm:text-sm font-bold text-slate-900 underline underline-offset-4 decoration-slate-300">
+                Key Features :
+              </h3>
+              <ul className="mt-3 space-y-2.5 text-xs sm:text-sm text-slate-600">
+                <li className="flex items-start gap-2.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-2 shrink-0" />
+                  <span>Interactive classroom lectures with dedicated computer lab practicals.</span>
+                </li>
+                <li className="flex items-start gap-2.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-2 shrink-0" />
+                  <span>Real-world project assignments and mock evaluation tests.</span>
+                </li>
+                <li className="flex items-start gap-2.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-2 shrink-0" />
+                  <span>Structured curriculum with comprehensive printed &amp; digital study materials.</span>
+                </li>
+                <li className="flex items-start gap-2.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-2 shrink-0" />
+                  <span>Regular doubt sessions and one-on-one lab guidance by expert faculty.</span>
+                </li>
+                <li className="flex items-start gap-2.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-2 shrink-0" />
+                  <span>Recognized academic diploma / certificate with QR verification upon completion.</span>
+                </li>
+              </ul>
             </div>
-          </motion.div>
+          </div>
 
-          {/* Quick Learning Resources */}
-          <motion.div
-            {...fadeUp(0.15)}
-            className="bg-white rounded-2xl border border-[#E2E8F0] p-6 space-y-4"
-          >
-            <h2 className="text-lg font-bold text-[#111827]">Student Learning Resources</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Link
-                href="/student/notes"
-                className="p-4 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] hover:bg-white hover:border-[#5B21F4] hover:shadow-sm transition-all flex items-center justify-between"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#F1EEFF] text-[#5B21F4] flex items-center justify-center">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-[#111827]">Study Notes</h4>
-                    <p className="text-[11px] text-[#64748B]">Download PDF notes</p>
-                  </div>
+          {/* 2. Syllabus Modules */}
+          {modules.length > 0 && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-[#0B3B82]" />
+                  <h3 className="text-base font-black text-slate-900">
+                    Syllabus Modules ({modules.length} Core Topics)
+                  </h3>
                 </div>
-                <ChevronRight className="w-4 h-4 text-[#94A3B8]" />
-              </Link>
+              </div>
 
-              <Link
-                href="/student/materials"
-                className="p-4 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] hover:bg-white hover:border-[#5B21F4] hover:shadow-sm transition-all flex items-center justify-between"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#ECFDF5] text-[#08A66A] flex items-center justify-center">
-                    <BookOpen className="w-5 h-5" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                {modules.map((mod, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3.5 rounded-xl border border-slate-100 bg-slate-50 flex items-start gap-3"
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center font-bold text-xs text-[#0B3B82] shrink-0">
+                      {idx + 1}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-900">{mod}</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Practical lab &amp; theory</p>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-[#111827]">Course Materials</h4>
-                    <p className="text-[11px] text-[#64748B]">Reference books &amp; slides</p>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-[#94A3B8]" />
-              </Link>
+                ))}
+              </div>
             </div>
-          </motion.div>
+          )}
+
+          {/* 3. Learning Resources Links */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Link
+              href="/student/materials"
+              className="p-4 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 transition-all flex items-center justify-between shadow-2xs"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#0B3B82] flex items-center justify-center">
+                  <BookOpen className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900">Study Materials</h4>
+                  <p className="text-[11px] text-slate-500">Curated reference slides</p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </Link>
+
+            <Link
+              href="/student/fees"
+              className="p-4 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 transition-all flex items-center justify-between shadow-2xs"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center">
+                  <CreditCard className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900">Fee Ledger</h4>
+                  <p className="text-[11px] text-slate-500">Track installments &amp; receipts</p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </Link>
+          </div>
         </div>
 
-        {/* Right: Course Information & Links */}
-        <div className="space-y-6">
-          <motion.div
-            {...fadeUp(0.1)}
-            className="bg-white rounded-2xl border border-[#E2E8F0] p-6 shadow-sm space-y-5 sticky top-6"
-          >
-            <div>
-              <p className="text-xs uppercase font-bold tracking-wider text-[#94A3B8]">
-                Standard Course Fee
-              </p>
-              <div className="flex items-baseline gap-2 mt-1">
-                <span className="text-3xl font-extrabold text-[#111827]">{feeFormatted}</span>
-                <span className="text-xs text-[#64748B]">Tuition + Lab</span>
+        {/* Right Column (4 cols): Sticky Khan Global Studies Card */}
+        <div className="lg:col-span-4 sticky top-6 space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-xs group">
+            {/* Banner Image */}
+            <div className="relative aspect-[16/9] w-full bg-slate-950 overflow-hidden shrink-0">
+              {resolvedImageUrl && !imageError ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={resolvedImageUrl}
+                  alt={course.course_name}
+                  onError={() => setImageError(true)}
+                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                />
+              ) : (
+                <div
+                  className="w-full h-full flex flex-col items-center justify-center p-4 text-white text-center relative overflow-hidden"
+                  style={{
+                    background: "linear-gradient(135deg, #1E1B4B 0%, #1E3A8A 100%)",
+                  }}
+                >
+                  <GraduationCap className="w-10 h-10 text-white mb-1" />
+                  <span className="text-[10px] font-mono text-blue-200 uppercase tracking-wider">
+                    {course.course_code || "DIPLOMA"}
+                  </span>
+                  <p className="text-xs font-black text-white line-clamp-1 max-w-[85%] mt-0.5">
+                    {course.course_name}
+                  </p>
+                </div>
+              )}
+
+              {/* Classroom Badge */}
+              <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-red-600/95 backdrop-blur-sm text-white font-extrabold text-[10px] sm:text-[11px] shadow-sm tracking-wide">
+                <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                <span>Classroom</span>
               </div>
+
+              {/* Enrolled Badge if already enrolled */}
+              {isEnrolled && (
+                <div className="absolute top-3 right-3 z-10 flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-600/95 backdrop-blur-sm text-white font-extrabold text-[10px] shadow-sm">
+                  <CheckCircle2 className="w-3 h-3" />
+                  <span>Enrolled</span>
+                </div>
+              )}
             </div>
 
-            <div className="p-3.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-2 text-xs">
-              <div className="flex justify-between text-[#64748B]">
-                <span>Course Code:</span>
-                <span className="font-bold text-[#111827]">{course.course_code}</span>
+            {/* Card Body */}
+            <div className="p-4 sm:p-5 space-y-4">
+              <div>
+                <h3 className="text-base sm:text-lg font-black text-slate-900 leading-snug line-clamp-2">
+                  {course.course_name}
+                </h3>
               </div>
-              <div className="flex justify-between text-[#64748B]">
-                <span>Duration:</span>
-                <span className="font-bold text-[#111827]">{course.course_duration}</span>
-              </div>
-              <div className="flex justify-between text-[#64748B]">
-                <span>Status:</span>
-                <span className="font-bold text-emerald-600 capitalize">
-                  {course.course_status}
+
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  REGISTRATION FEE
                 </span>
+                <div className="flex items-baseline gap-2 mt-0.5 flex-wrap">
+                  <span className="text-2xl sm:text-3xl font-black text-[#0B3B82]">
+                    ₹{feeNum.toLocaleString("en-IN")}/-
+                  </span>
+                  {originalFee > feeNum && (
+                    <span className="text-sm text-slate-400 line-through">
+                      ₹{originalFee.toLocaleString("en-IN")}/-
+                    </span>
+                  )}
+                  {discountPercent > 0 && (
+                    <span className="text-xs font-black text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
+                      SAVE {discountPercent}%
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-100 space-y-2.5 text-xs text-slate-700">
+                <div className="flex items-center gap-2.5">
+                  <ShieldCheck className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span>Validity - {course.course_duration || "12 Months"}</span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span>Type - Classroom &amp; Computer Labs</span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <Clock className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span>Duration - {course.course_duration || "Regular Batch"}</span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <Languages className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span>Language - English &amp; Hindi</span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <Award className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span>Certificate - Verified Academic Diploma</span>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-100 space-y-2">
+                {isEnrolled ? (
+                  <div className="w-full h-11 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-extrabold text-sm flex items-center justify-center gap-2 shadow-xs">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Enrolled &amp; Active</span>
+                  </div>
+                ) : (
+                  <Link href={getEnrollmentUrl(course.course_id)} className="block w-full">
+                    <Button className="w-full h-11 rounded-xl text-sm font-black bg-[#0B3B82] hover:bg-[#072B60] text-white shadow-md cursor-pointer flex items-center justify-center gap-2">
+                      <span>Enroll Now</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </Button>
+                  </Link>
+                )}
+
+                <Link href="/student/fees" className="block w-full">
+                  <Button
+                    variant="outline"
+                    className="w-full h-9 rounded-xl text-xs font-bold border-slate-200 text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  >
+                    View Fee Ledger
+                  </Button>
+                </Link>
+
+                <Link href="/student/materials" className="block w-full">
+                  <Button
+                    variant="outline"
+                    className="w-full h-9 rounded-xl text-xs font-bold border-[#DDD6FE] text-[#5B21F4] bg-[#F1EEFF] hover:bg-[#E9E4FF] cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Access Study Materials</span>
+                  </Button>
+                </Link>
               </div>
             </div>
-
-            <div className="space-y-2.5 pt-1">
-              <Link
-                href="/student/fees"
-                className="w-full py-3 rounded-xl text-white font-bold text-xs shadow-md shadow-[#5B21F4]/20 hover:shadow-lg hover:shadow-[#5B21F4]/30 active:scale-[0.99] transition-all cursor-pointer flex items-center justify-center gap-2 text-center"
-                style={{
-                  background: "linear-gradient(135deg, #5B21F4 0%, #2563EB 100%)",
-                }}
-              >
-                <CreditCard className="w-4 h-4" />
-                <span>View Fee Ledger &amp; Dues</span>
-              </Link>
-
-              <Link
-                href="/student/courses"
-                className="w-full py-2.5 rounded-xl border border-[#E2E8F0] hover:border-[#5B21F4] text-[#475569] hover:text-[#5B21F4] text-xs font-bold transition-all text-center block"
-              >
-                Back to All Courses
-              </Link>
-            </div>
-          </motion.div>
+          </div>
         </div>
       </div>
     </div>

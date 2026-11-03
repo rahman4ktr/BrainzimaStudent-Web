@@ -21,6 +21,13 @@ if (typeof window !== "undefined") {
   }
 }
 
+export type StudentDocuments = {
+  docs_st_image?: string | null;
+  docs_st_aadhaar_front?: string | null;
+  docs_st_aadhaar_back?: string | null;
+  docs_st_qualification?: string | null;
+};
+
 export type BrainzimaSession = {
   user_id: number;
   name: string;
@@ -36,10 +43,60 @@ export type BrainzimaSession = {
   logged_in_at: string;
   last_login_at: string | null;
   last_login_ip: string | null;
+  // Student Specific Additions
+  dob?: string | null;
+  st_dob?: string | null;
+  docs_st_image?: string | null;
+  docs_st_aadhaar_front?: string | null;
+  docs_st_aadhaar_back?: string | null;
+  docs_st_qualification?: string | null;
+  documents?: StudentDocuments | null;
 };
 
 // Backward-compatible type alias
 export type Session = BrainzimaSession;
+
+/**
+ * Helper to check whether today is the student's birthday.
+ * Compares current month & day in local / IST with DOB (e.g. YYYY-MM-DD or DD/MM/YYYY).
+ */
+export function isBirthdayToday(dob: string | null | undefined): boolean {
+  if (!dob || typeof dob !== "string") return false;
+  const trimmed = dob.trim();
+  if (!trimmed || trimmed === "null" || trimmed === "undefined") return false;
+
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1; // 1-12
+  const currentDay = now.getDate(); // 1-31
+
+  // 1. YYYY-MM-DD or YYYY/MM/DD
+  const isoMatch = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (isoMatch) {
+    const m = parseInt(isoMatch[2], 10);
+    const d = parseInt(isoMatch[3], 10);
+    if (m === currentMonth && d === currentDay) return true;
+  }
+
+  // 2. DD-MM-YYYY or DD/MM/YYYY
+  const dmyMatch = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (dmyMatch) {
+    const d = parseInt(dmyMatch[1], 10);
+    const m = parseInt(dmyMatch[2], 10);
+    if (m === currentMonth && d === currentDay) return true;
+  }
+
+  // 3. Fallback standard parse
+  try {
+    const parsed = new Date(trimmed);
+    if (!isNaN(parsed.getTime())) {
+      return parsed.getMonth() + 1 === currentMonth && parsed.getDate() === currentDay;
+    }
+  } catch {
+    /* ignore parse errors */
+  }
+
+  return false;
+}
 
 /**
  * Save authenticated session to sessionStorage ONLY.
@@ -61,13 +118,43 @@ export function saveSession(
     ? formatIstDateTime(data.last_login_at)
     : formatIstDateTime(new Date());
 
+  const rawDob = (data as any).dob || (data as any).st_dob || null;
+  const rawImage =
+    (data as any).docs_st_image ||
+    (data as any).documents?.docs_st_image ||
+    data.user_image ||
+    null;
+  const rawAadhFront =
+    (data as any).docs_st_aadhaar_front ||
+    (data as any).documents?.docs_st_aadhaar_front ||
+    null;
+  const rawAadhBack =
+    (data as any).docs_st_aadhaar_back ||
+    (data as any).documents?.docs_st_aadhaar_back ||
+    null;
+  const rawQual =
+    (data as any).docs_st_qualification ||
+    (data as any).documents?.docs_st_qualification ||
+    null;
+
+  const docsObj: StudentDocuments | null =
+    (data as any).documents ||
+    (rawImage || rawAadhFront || rawAadhBack || rawQual
+      ? {
+          docs_st_image: sanitizeImagePath(rawImage),
+          docs_st_aadhaar_front: sanitizeImagePath(rawAadhFront),
+          docs_st_aadhaar_back: sanitizeImagePath(rawAadhBack),
+          docs_st_qualification: sanitizeImagePath(rawQual),
+        }
+      : null);
+
   if (typeof window === "undefined") {
     return {
       user_id: data.user_id,
       name: data.name,
       email: data.email,
       mobile: data.mobile ?? null,
-      role: (data.role as "admin" | "user" | "student") || "user",
+      role: (data.role as "user" | "student") || "user",
       is_student: Boolean(data.is_student),
       student_id: data.student_id ?? null,
       registration_number: data.registration_number ?? null,
@@ -77,6 +164,13 @@ export function saveSession(
       logged_in_at: new Date().toISOString(),
       last_login_at: formattedLastLoginAt,
       last_login_ip: data.last_login_ip ?? null,
+      dob: rawDob,
+      st_dob: rawDob,
+      docs_st_image: sanitizeImagePath(rawImage),
+      docs_st_aadhaar_front: sanitizeImagePath(rawAadhFront),
+      docs_st_aadhaar_back: sanitizeImagePath(rawAadhBack),
+      docs_st_qualification: sanitizeImagePath(rawQual),
+      documents: docsObj,
     };
   }
 
@@ -97,7 +191,7 @@ export function saveSession(
     student_id: data.student_id ? Number(data.student_id) : null,
     registration_number: data.registration_number ?? null,
     centre_id: data.centre_id ? Number(data.centre_id) : null,
-    user_image: sanitizeImagePath(data.user_image),
+    user_image: sanitizeImagePath(data.user_image || rawImage),
     user_verified:
       typeof data.user_verified === "number"
         ? data.user_verified === 1
@@ -105,6 +199,13 @@ export function saveSession(
     logged_in_at: new Date().toISOString(),
     last_login_at: formattedLastLoginAt,
     last_login_ip: data.last_login_ip ?? null,
+    dob: rawDob,
+    st_dob: rawDob,
+    docs_st_image: sanitizeImagePath(rawImage),
+    docs_st_aadhaar_front: sanitizeImagePath(rawAadhFront),
+    docs_st_aadhaar_back: sanitizeImagePath(rawAadhBack),
+    docs_st_qualification: sanitizeImagePath(rawQual),
+    documents: docsObj,
   };
 
   try {
@@ -274,6 +375,22 @@ export function getFileUrl(path: string | null | undefined): string | null {
     return sanitized;
   }
 
+  // 2. PHP REST API flat upload path (uploads/images/...) or course asset images
+  const normalizedPath = sanitized.replace(/^\/+/, "");
+  if (
+    normalizedPath.startsWith("uploads/") ||
+    normalizedPath.startsWith("onlinecoures/") ||
+    normalizedPath.startsWith("course/")
+  ) {
+    const apiBase = (
+      process.env.API_BASE_URL ||
+      process.env.NEXT_PUBLIC_API_BASE_URL ||
+      process.env.NEXT_PUBLIC_API_URL ||
+      "https://api.brainzima.com/student"
+    ).replace(/\/+$/, "").replace(/\/api$/, "");
+    return `${apiBase}/${normalizedPath}`;
+  }
+
   let clean = sanitized
     .replace(/^https?:\/\/[^/]+\/?/, "")
     .replace(/^(student|studnet)\.brainzima\.com\/?/, "");
@@ -299,6 +416,26 @@ export function getFileUrl(path: string | null | undefined): string | null {
   ).replace(/\/$/, "");
 
   return `${baseDomain}${clean}`;
+}
+
+/**
+ * Returns direct fully qualified URL for course banners & thumbnails.
+ */
+export function getCourseImageUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const sanitized = sanitizeImagePath(path);
+  if (!sanitized) return null;
+  if (sanitized.startsWith("http://") || sanitized.startsWith("https://")) {
+    return sanitized;
+  }
+  const clean = sanitized.replace(/^\/+/, "");
+  const apiBase = (
+    process.env.API_BASE_URL ||
+    process.env.NEXT_PUBLIC_API_BASE_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    "https://api.brainzima.com/student"
+  ).replace(/\/+$/, "").replace(/\/api$/, "");
+  return `${apiBase}/${clean}`;
 }
 
 /**

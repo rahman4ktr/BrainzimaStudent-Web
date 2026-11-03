@@ -209,7 +209,6 @@ export default function StudentMaterialsPage() {
                   <th className="py-3.5 px-4 sm:px-6">Material Title &amp; Description</th>
                   <th className="py-3.5 px-4 hidden md:table-cell">Course</th>
                   <th className="py-3.5 px-4 hidden sm:table-cell">Type</th>
-                  <th className="py-3.5 px-4 hidden lg:table-cell">Path / Filename</th>
                   <th className="py-3.5 px-4 sm:px-6 text-right">Action</th>
                 </tr>
               </thead>
@@ -249,12 +248,6 @@ export default function StudentMaterialsPage() {
                       <td className="py-4 px-4 hidden sm:table-cell">
                         <span className="text-[11px] font-semibold text-[#475569] bg-[#F1F5F9] px-2 py-1 rounded-md">
                           {docType}
-                        </span>
-                      </td>
-
-                      <td className="py-4 px-4 hidden lg:table-cell">
-                        <span className="text-[11px] font-mono text-[#64748B] truncate max-w-xs block">
-                          {item.notes_pdf || "—"}
                         </span>
                       </td>
 

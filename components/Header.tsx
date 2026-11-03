@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -10,7 +11,6 @@ import {
   GraduationCap,
   UserCircle2,
   Settings,
-  LogOut,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { getFileUrl, getInitials } from "@/lib/session";
@@ -21,6 +21,7 @@ const routeLabels: Record<string, string> = {
   "/student/courses": "My Courses", 
   "/student/notes": "Notes & Materials",
   "/student/materials": "Study Materials",
+  "/student/ebook-library": "Ebook Library",
   "/student/fees": "Fee Details",
   "/student/payments": "Payments",
   "/student/profile": "My Profile",
@@ -39,12 +40,36 @@ export default function Header({ onMobileMenuToggle, mobileMenuOpen }: HeaderPro
   const [profileOpen, setProfileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
 
+  const profileRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
+
   const avatarUrl = getFileUrl(user?.user_image);
+  const [avatarError, setAvatarError] = useState(false);
   const initials = getInitials(user?.name);
   const displayName = user?.name || "Student";
   const regno = user?.registration_number || (user?.student_id ? `ST-${user.student_id}` : "Student");
 
   const pageTitle = routeLabels[pathname] ?? "Portal";
+
+  // Automatically close all dropdowns when navigating to a new route
+  useEffect(() => {
+    setProfileOpen(false);
+    setNotifOpen(false);
+  }, [pathname]);
+
+  // Click-outside listener to close dropdowns
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setProfileOpen(false);
+      }
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
 
   const [notifications, setNotifications] = useState<
     { id: number; text: string; time: string; unread: boolean }[]
@@ -68,7 +93,7 @@ export default function Header({ onMobileMenuToggle, mobileMenuOpen }: HeaderPro
   const unreadCount = notifications.filter((n) => n.unread).length;
 
   return (
-    <header className="sticky top-0 z-20 h-16 bg-white/90 backdrop-blur-md border-b border-[#E2E8F0] flex items-center px-4 md:px-6 gap-4 shrink-0">
+    <header className="sticky top-0 z-50 h-16 bg-white/90 backdrop-blur-md border-b border-[#E2E8F0] flex items-center px-4 md:px-6 gap-4 shrink-0">
       {/* Mobile Brand */}
       <div className="lg:hidden flex items-center gap-2 flex-1">
         <div
@@ -100,7 +125,7 @@ export default function Header({ onMobileMenuToggle, mobileMenuOpen }: HeaderPro
 
       <div className="ml-auto flex items-center gap-2">
         {/* Notifications */}
-        <div className="relative">
+        <div ref={notifRef} className="relative">
           <button
             id="notif-btn"
             onClick={() => {
@@ -168,7 +193,7 @@ export default function Header({ onMobileMenuToggle, mobileMenuOpen }: HeaderPro
         </div>
 
         {/* Profile Dropdown */}
-        <div className="relative">
+        <div ref={profileRef} className="relative">
           <button
             id="profile-btn"
             onClick={() => {
@@ -178,16 +203,17 @@ export default function Header({ onMobileMenuToggle, mobileMenuOpen }: HeaderPro
             className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl hover:bg-[#F8FAFC] transition-colors cursor-pointer"
             aria-label="Account menu"
           >
-            {avatarUrl ? (
+            {avatarUrl && !avatarError ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={avatarUrl}
                 alt={displayName}
+                onError={() => setAvatarError(true)}
                 className="w-7 h-7 rounded-full object-cover shrink-0"
               />
             ) : (
               <div
-                className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-bold shrink-0"
+                className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-bold shrink-0 shadow-xs"
                 style={{ background: "linear-gradient(135deg, #5B21F4, #2563EB)" }}
               >
                 {initials}
@@ -224,25 +250,16 @@ export default function Header({ onMobileMenuToggle, mobileMenuOpen }: HeaderPro
                     { href: "/student/profile", icon: UserCircle2, label: "My Profile" },
                     { href: "/student/change-password", icon: Settings, label: "Change Password" },
                   ].map((item) => (
-                    <a
+                    <Link
                       key={item.href}
                       href={item.href}
+                      onClick={() => setProfileOpen(false)}
                       className="flex items-center gap-3 px-4 py-2.5 text-sm text-[#475569] hover:bg-[#F8FAFC] hover:text-[#111827] transition-colors"
                     >
                       <item.icon className="w-4 h-4" />
                       {item.label}
-                    </a>
+                    </Link>
                   ))}
-                </div>
-
-                <div className="border-t border-[#F1F5F9] py-1.5">
-                  <a
-                    href="/student/logout"
-                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-[#EF4444] hover:bg-[#FEF2F2] transition-colors"
-                  >
-                    <LogOut className="w-4 h-4" />
-                    Logout
-                  </a>
                 </div>
               </motion.div>
             )}

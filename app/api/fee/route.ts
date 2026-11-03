@@ -12,11 +12,16 @@ import Razorpay from "razorpay";
 import { sendPaymentConfirmationEmail } from "@/lib/email";
 import { getBackendApiUrl } from "@/lib/apiConfig";
 import { getCleanRazorpayConfig } from "@/lib/razorpay";
+import { formatIstDateTime } from "@/lib/utils";
+import {
+  getUserPurchasedOnlineCourses,
+  getAllPurchasedOnlineCourses,
+} from "@/lib/onlineCoursePurchaseStore";
 
 const PHP_API = getBackendApiUrl();
 
 // ─── GET /api/fee ─────────────────────────────────────────────────────────────
-// Proxy to PHP GET /fee — returns fee transactions for the authenticated student
+// Unified fee ledger returning both offline center installments and online course purchases
 export async function GET(req: NextRequest) {
   try {
     const userId = req.headers.get("x-user-id");
@@ -35,95 +40,203 @@ export async function GET(req: NextRequest) {
       cache: "no-store",
     });
 
-    const data = await res.json().catch(() => null);
+    let data = await res.json().catch(() => null);
+
+    // If PHP API returned not ok or null, initialize fallback object for online students
+    if (!data || typeof data !== "object") {
+      data = { success: true, message: "Success", data: { transactions: [], count: 0 } };
+    }
+    if (!data.data || typeof data.data !== "object") {
+      data.data = { transactions: [], count: 0 };
+    }
 
     // Normalize transaction field names so both PHP column names and
     // legacy aliases work transparently in the frontend.
-    if (data?.data) {
-      const normalizeTx = (tx: any) => ({
-        ...tx,
-        transaction_id: Number(tx.transaction_id ?? tx.tr_id ?? 0),
-        tr_id: Number(tx.transaction_id ?? tx.tr_id ?? 0),
-        enrollment_id: Number(tx.enrollment_id ?? tx.tr_stc_id ?? tx.stc_id ?? 0),
-        tr_stc_id: Number(tx.enrollment_id ?? tx.tr_stc_id ?? tx.stc_id ?? 0),
-        amount: Number(tx.amount ?? tx.tr_amount ?? 0),
-        tr_amount: Number(tx.amount ?? tx.tr_amount ?? 0),
-        mode: tx.mode ?? tx.tr_mode ?? "razorpay",
-        tr_mode: tx.mode ?? tx.tr_mode ?? "razorpay",
-        payment_reference: tx.payment_reference ?? tx.payref ?? tx.tr_payref ?? "",
-        payref: tx.payment_reference ?? tx.payref ?? tx.tr_payref ?? "",
-        tr_payref: tx.payment_reference ?? tx.payref ?? tx.tr_payref ?? "",
-        remark: tx.remark ?? tx.tr_remark ?? "Fee installment payment",
-        tr_remark: tx.remark ?? tx.tr_remark ?? "Fee installment payment",
-        date: tx.date ?? tx.tr_date ?? "",
-        tr_date: tx.date ?? tx.tr_date ?? "",
-        course_name: tx.course_name || "Enrolled Course",
-      });
+    const normalizeTx = (tx: any) => ({
+      ...tx,
+      transaction_id: Number(tx.transaction_id ?? tx.tr_id ?? 0),
+      tr_id: Number(tx.transaction_id ?? tx.tr_id ?? 0),
+      enrollment_id: Number(tx.enrollment_id ?? tx.tr_stco_id ?? tx.tr_stc_id ?? tx.stc_id ?? 0),
+      tr_stc_id: (tx.is_online || tx.course_format === "online" || tx.tr_course_type === "online") ? null : Number(tx.tr_stc_id ?? tx.enrollment_id ?? tx.stc_id ?? 0),
+      tr_stco_id: (tx.is_online || tx.course_format === "online" || tx.tr_course_type === "online") ? Number(tx.tr_stco_id ?? tx.enrollment_id ?? 0) : null,
+      amount: Number(tx.amount ?? tx.tr_amount ?? 0),
+      tr_amount: Number(tx.amount ?? tx.tr_amount ?? 0),
+      mode: tx.mode ?? tx.tr_mode ?? "razorpay",
+      tr_mode: tx.mode ?? tx.tr_mode ?? "razorpay",
+      payment_reference: tx.payment_reference ?? tx.payref ?? tx.tr_payref ?? "",
+      payref: tx.payment_reference ?? tx.payref ?? tx.tr_payref ?? "",
+      tr_payref: tx.payment_reference ?? tx.payref ?? tx.tr_payref ?? "",
+      remark: tx.remark ?? tx.tr_remark ?? "Fee installment payment",
+      tr_remark: tx.remark ?? tx.tr_remark ?? "Fee installment payment",
+      date: tx.date ?? tx.tr_date ?? "",
+      tr_date: tx.date ?? tx.tr_date ?? "",
+      course_name: tx.course_name || "Enrolled Course",
+      course_format: tx.course_format || (tx.is_online ? "online" : "offline"),
+      is_online: Boolean(tx.is_online || tx.course_format === "online"),
+    });
 
-      if (Array.isArray(data.data)) {
-        data.data = data.data.map(normalizeTx);
-      } else if (Array.isArray(data.data.transactions)) {
-        data.data.transactions = data.data.transactions.map(normalizeTx);
-      }
-
-      // Calculate single source of truth for total paid: SUM(bi_fee_transactions.tr_amount)
-      const allTxList: any[] = Array.isArray(data.data)
-        ? data.data
-        : Array.isArray(data.data.transactions)
-        ? data.data.transactions
-        : [];
-
-      const sumOfTx = allTxList.reduce(
-        (acc: number, t: any) => acc + (Number(t.amount ?? t.tr_amount ?? 0) || 0),
-        0
-      );
-
-      const rawSummary =
-        data.data.summary ||
-        (allTxList.length > 0 && allTxList[0].summary ? allTxList[0].summary : null);
-
-      if (rawSummary || allTxList.length > 0) {
-        const s = rawSummary || {};
-        const totalFee = Number(s.stc_total_fee ?? s.total_fee ?? 0);
-        const discount = Number(s.stc_discount ?? s.discount ?? 0);
-        const initialPayment = Number(s.stc_initial_payment ?? s.initial_payment ?? 0);
-        // Single source of truth for actual money paid:
-        const totalPaid = allTxList.length > 0 ? sumOfTx : Number(s.total_paid ?? initialPayment);
-        // Invariant: remaining_dues = total_fee - discount - total_successful_paid
-        const dues =
-          s.stc_dues !== undefined && s.stc_dues !== null && s.stc_dues !== ""
-            ? Number(s.stc_dues)
-            : s.dues !== undefined && s.dues !== null && s.dues !== ""
-            ? Number(s.dues)
-            : Math.max(0, totalFee - discount - totalPaid);
-
-        const canonicalSummary = {
-          ...s,
-          stc_total_fee: totalFee,
-          total_fee: totalFee,
-          stc_discount: discount,
-          discount: discount,
-          stc_initial_payment: initialPayment,
-          initial_payment: initialPayment,
-          total_paid: totalPaid,
-          total_successful_paid: totalPaid,
-          stc_dues: dues,
-          dues: dues,
-          remaining_dues: dues,
-        };
-
-        data.data.summary = canonicalSummary;
-
-        // Also normalize each transaction's summary so child references stay consistent
-        allTxList.forEach((t: any) => {
-          if (t.summary) {
-            t.summary = { ...t.summary, ...canonicalSummary };
-          }
-        });
-      }
+    let allTxList: any[] = [];
+    if (Array.isArray(data.data)) {
+      allTxList = data.data.map(normalizeTx);
+    } else if (Array.isArray(data.data.transactions)) {
+      allTxList = data.data.transactions.map(normalizeTx);
     }
 
-    return NextResponse.json(data, { status: res.status });
+    // Merge verified online course purchases so both offline and online appear in ledger
+    try {
+      let onlinePurchases: any[] = [];
+      if (userRole === "admin") {
+        onlinePurchases = await getAllPurchasedOnlineCourses();
+      } else if (userId && !isNaN(Number(userId))) {
+        onlinePurchases = await getUserPurchasedOnlineCourses(Number(userId), userRole);
+      }
+
+      for (const onl of onlinePurchases) {
+        const payRef = onl.razorpay_payment_id || `ONL_PUR_${onl.course_id}`;
+        const isAlreadyInList = allTxList.some(
+          (t) =>
+            (onl.razorpay_payment_id && t.payment_reference === onl.razorpay_payment_id) ||
+            (t.is_online && Number(t.enrollment_id || t.course_id) === Number(onl.course_id))
+        );
+        if (!isAlreadyInList) {
+          const courseFee = Number(onl.course_fee || onl.amount_paid || 0);
+          const discountAmt = Number(onl.discount || 0);
+          const paidAmt = Number(onl.amount_paid || (discountAmt > 0 ? Math.max(0, courseFee - discountAmt) : courseFee));
+          const couponCodeStr = onl.coupon_code || "";
+
+          allTxList.push({
+            transaction_id: onl.stco_id || 900000 + Number(onl.course_id),
+            tr_id: onl.stco_id || 900000 + Number(onl.course_id),
+            enrollment_id: onl.stco_id || onl.course_id,
+            tr_stc_id: onl.stco_id || onl.course_id,
+            stco_id: onl.stco_id || null,
+            student_id: onl.student_id || (userId ? Number(userId) : null),
+            registration_no: onl.registration_number || null,
+            student_name: onl.student_name || null,
+            amount: paidAmt,
+            tr_amount: paidAmt,
+            total_fee: courseFee,
+            course_fee: courseFee,
+            discount: discountAmt,
+            discount_amount: discountAmt,
+            coupon_code: couponCodeStr || null,
+            coupon_discount: discountAmt,
+            amount_paid: paidAmt,
+            initial_payment: paidAmt,
+            dues: 0,
+            remaining_dues: 0,
+            mode: "razorpay",
+            tr_mode: "razorpay",
+            payment_reference: payRef,
+            payref: payRef,
+            tr_payref: payRef,
+            razorpay_payment_id: onl.razorpay_payment_id || payRef,
+            razorpay_order_id: onl.razorpay_order_id || null,
+            remark: `Online Course Enrollment: ${onl.course_name}${
+              couponCodeStr
+                ? ` (Coupon '${couponCodeStr}' applied: ₹${discountAmt} off)`
+                : discountAmt > 0
+                ? ` (₹${discountAmt} discount applied)`
+                : ""
+            }`,
+            tr_remark: `Online Course Enrollment: ${onl.course_name}${
+              couponCodeStr
+                ? ` (Coupon '${couponCodeStr}' applied: ₹${discountAmt} off)`
+                : discountAmt > 0
+                ? ` (₹${discountAmt} discount applied)`
+                : ""
+            }`,
+            date: onl.purchased_at ? formatIstDateTime(onl.purchased_at) : "",
+            tr_date: onl.purchased_at ? formatIstDateTime(onl.purchased_at) : "",
+            course_name: onl.course_name,
+            course_code: onl.course_code,
+            course_format: "online",
+            is_online: true,
+            status: "completed",
+            summary: {
+              total_fee: courseFee,
+              course_fee: courseFee,
+              discount: discountAmt,
+              coupon_code: couponCodeStr || null,
+              initial_payment: paidAmt,
+              total_paid: paidAmt,
+              dues: 0,
+              remaining_dues: 0,
+              stc_total_fee: courseFee,
+              stc_discount: discountAmt,
+              stc_initial_payment: paidAmt,
+              stc_dues: 0,
+            },
+          });
+        }
+      }
+    } catch (onlErr) {
+      console.warn("[Fee API] Notice loading online purchases:", onlErr);
+    }
+
+    // Sort all transactions newest first
+    allTxList.sort(
+      (a, b) => new Date(b.date || b.tr_date || 0).getTime() - new Date(a.date || a.tr_date || 0).getTime()
+    );
+
+    // Calculate financial metrics from offline transactions
+    const sumOfTx = allTxList.reduce(
+      (acc: number, t: any) => acc + (Number(t.amount ?? t.tr_amount ?? 0) || 0),
+      0
+    );
+
+    const rawSummary =
+      data.data.summary ||
+      (allTxList.length > 0 && allTxList[0].summary && !allTxList[0].is_online ? allTxList[0].summary : null);
+
+    const offlineTotalFee = Number(rawSummary?.stc_total_fee ?? rawSummary?.total_fee ?? 0);
+    const offlineDiscount = Number(rawSummary?.stc_discount ?? rawSummary?.discount ?? 0);
+    const offlineInitialPayment = Number(rawSummary?.stc_initial_payment ?? rawSummary?.initial_payment ?? 0);
+
+    const totalFee = offlineTotalFee;
+    const discount = offlineDiscount;
+    const initialPayment = offlineInitialPayment;
+    const totalPaid = sumOfTx > 0 ? sumOfTx : Number(rawSummary?.total_paid ?? initialPayment);
+
+    // Remaining dues strictly from offline course dues
+    const computedOfflineDues = Math.max(0, offlineTotalFee - offlineDiscount - totalPaid);
+    const rawDues =
+      rawSummary?.stc_dues !== undefined && rawSummary?.stc_dues !== null && rawSummary?.stc_dues !== ""
+        ? Number(rawSummary.stc_dues)
+        : rawSummary?.dues !== undefined && rawSummary?.dues !== null && rawSummary?.dues !== ""
+        ? Number(rawSummary.dues)
+        : computedOfflineDues;
+    const dues = Math.min(rawDues, computedOfflineDues);
+
+    const canonicalSummary = {
+      ...(rawSummary || {}),
+      stc_total_fee: totalFee,
+      total_fee: totalFee,
+      stc_discount: discount,
+      discount: discount,
+      stc_initial_payment: initialPayment,
+      initial_payment: initialPayment,
+      total_paid: totalPaid,
+      total_successful_paid: totalPaid,
+      stc_dues: dues,
+      dues: dues,
+      remaining_dues: dues,
+    };
+
+    data.success = true;
+    data.data.transactions = allTxList;
+    data.data.summary = canonicalSummary;
+    data.data.count = allTxList.length;
+    data.data.total = allTxList.length;
+
+    // Normalize summary across all transaction objects
+    allTxList.forEach((t: any) => {
+      if (t.summary) {
+        t.summary = { ...t.summary, ...canonicalSummary };
+      }
+    });
+
+    return NextResponse.json(data, { status: 200 });
   } catch (error) {
     console.error("[Fee API] GET error:", error);
     return NextResponse.json(

@@ -1,26 +1,27 @@
+// app/api/upload/route.ts
+// Proxies file uploads directly to the Brainzima PHP REST API backend.
+// Frontend does NOT store files locally or on disk. All physical files are saved by PHP in uploads/images/.
+
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
+import { getBackendApiUrl } from "@/lib/apiConfig";
 import {
   MAX_IMAGE_SIZE_BYTES,
   ALLOWED_EXTENSIONS,
   ALLOWED_MIME_TYPES,
   extractExtension,
-  updateUserProfileImage,
-  saveTempImage,
-  getBrowserFileUrl,
-  saveStudentDocumentFile,
+  toFullPublicUrl,
 } from "@/lib/imageStorage";
+
+const PHP_API = getBackendApiUrl();
 
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    const file = (formData.get("file") || formData.get("user_image")) as File | null;
     const rawUserId =
       formData.get("userId") ||
       formData.get("user_id") ||
       req.headers.get("x-user-id");
-    const currentPublicPath = (formData.get("current_image") as string) || null;
     const rawRole =
       formData.get("role")?.toString() ||
       formData.get("user_role")?.toString() ||
@@ -32,8 +33,7 @@ export async function POST(req: NextRequest) {
     const isStudent =
       rawIsStudent === "true" ||
       rawIsStudent === "1" ||
-      rawRole.toLowerCase() === "student" ||
-      (currentPublicPath ? currentPublicPath.includes("students") : false);
+      rawRole.toLowerCase() === "student";
     const role = isStudent ? "student" : (rawRole || "user");
 
     if (!file) {
@@ -48,9 +48,6 @@ export async function POST(req: NextRequest) {
     const rawStudentId =
       formData.get("student_id") ||
       formData.get("studentId");
-    const rawRegno =
-      formData.get("registration_number") ||
-      formData.get("regno");
 
     if (docType) {
       if (!rawStudentId) {
@@ -85,66 +82,120 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const bytes = await file.arrayBuffer();
-      const fileBuffer = Buffer.from(bytes);
+      // ── Send to PHP REST API (FileUploadHelper + Flat Storage) ──────────────
+      let phpFieldName = "docs_st_image";
+      const dt = docType.toLowerCase();
+      if (dt.includes("front") || dt.includes("aadhaar_front")) {
+        phpFieldName = "docs_st_aadhaar_front";
+      } else if (dt.includes("back") || dt.includes("aadhaar_back")) {
+        phpFieldName = "docs_st_aadhaar_back";
+      } else if (dt.includes("qual") || dt.includes("qualification")) {
+        phpFieldName = "docs_st_qualification";
+      }
 
-      const result = await saveStudentDocumentFile({
-        studentId: String(rawStudentId),
-        regno: rawRegno ? String(rawRegno) : null,
-        docType,
-        fileBuffer,
-        originalFilename: file.name,
+      const bytes = await file.arrayBuffer();
+      const blob = new Blob([bytes], { type: file.type || "application/octet-stream" });
+      const phpForm = new FormData();
+      phpForm.append(phpFieldName, blob, file.name || `${phpFieldName}.${rawExt}`);
+      if (phpFieldName === "docs_st_aadhaar_front") {
+        phpForm.append("aadhaar_front", blob, file.name || `aadhaar_front.${rawExt}`);
+      } else if (phpFieldName === "docs_st_aadhaar_back") {
+        phpForm.append("aadhaar_back", blob, file.name || `aadhaar_back.${rawExt}`);
+      } else if (phpFieldName === "docs_st_qualification") {
+        phpForm.append("qualification", blob, file.name || `qualification.${rawExt}`);
+      }
+
+      const phpRes = await fetch(`${PHP_API}/document/student/${rawStudentId}`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "X-User-Id": String(rawUserId || 0),
+          "X-User-Role": "student",
+        },
+        body: phpForm,
       });
 
-      // Requirement 12: Profile Image Sync
-      // If docs_st_image / profile was uploaded and userId is available, sync to user avatar folders
-      if (
-        (docType === "docs_st_image" || docType === "profile" || docType === "photo") &&
-        rawUserId
-      ) {
+      const json = await phpRes.json().catch(() => null);
+
+      if (!phpRes.ok || !json?.success) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: json?.message || "Failed to upload document to PHP backend.",
+          },
+          { status: phpRes.status || 500 }
+        );
+      }
+
+      const backendData = json.data || {};
+      let backendReturnedPath: string | null = null;
+      if (phpFieldName === "docs_st_image") {
+        backendReturnedPath =
+          backendData.docs_st_image ||
+          backendData.user_image ||
+          backendData.image ||
+          backendData.path ||
+          null;
+      } else if (phpFieldName === "docs_st_aadhaar_front") {
+        backendReturnedPath =
+          backendData.docs_st_aadhaar_front ||
+          backendData.aadhaar_front ||
+          backendData.path ||
+          null;
+      } else if (phpFieldName === "docs_st_aadhaar_back") {
+        backendReturnedPath =
+          backendData.docs_st_aadhaar_back ||
+          backendData.aadhaar_back ||
+          backendData.path ||
+          null;
+      } else if (phpFieldName === "docs_st_qualification") {
+        backendReturnedPath =
+          backendData.docs_st_qualification ||
+          backendData.qualification ||
+          backendData.path ||
+          null;
+      } else {
+        backendReturnedPath = backendData[phpFieldName] || backendData.path || null;
+      }
+
+      const fullPublicUrl = toFullPublicUrl(backendReturnedPath);
+
+      // Ensure MySQL database stores the full canonical public URL string
+      if (fullPublicUrl) {
         try {
-          const uId = parseInt(String(rawUserId), 10);
-          if (!isNaN(uId) && uId > 0) {
-            const userNamedDir = path.join(
-              process.cwd(),
-              "public",
-              "uploads",
-              "users",
-              `user-${uId}`
-            );
-            const userNumericDir = path.join(
-              process.cwd(),
-              "public",
-              "uploads",
-              "users",
-              String(uId)
-            );
-            await fs.mkdir(userNamedDir, { recursive: true });
-            await fs.mkdir(userNumericDir, { recursive: true });
-            await fs
-              .writeFile(path.join(userNamedDir, result.filename), fileBuffer)
-              .catch(() => {});
-            await fs
-              .writeFile(path.join(userNumericDir, result.filename), fileBuffer)
-              .catch(() => {});
-          }
-        } catch {
-          // ignore
+          await fetch(`${PHP_API}/document/student/${rawStudentId}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              "X-User-Id": String(rawUserId || 0),
+              "X-User-Role": "student",
+            },
+            body: JSON.stringify({
+              [phpFieldName]: fullPublicUrl,
+            }),
+          });
+        } catch (syncErr) {
+          console.warn("[Upload API] Notice syncing full document URL to DB:", syncErr);
         }
       }
 
-      // Requirement 8: Return success: true and path / db_path
       return NextResponse.json({
         success: true,
         message: "Document uploaded successfully.",
-        doc_type: docType,
-        path: result.publicPath,
-        db_path: result.publicPath,
-        url: result.browserUrl,
-        filename: result.filename,
+        doc_type: phpFieldName,
+        path: fullPublicUrl,
+        db_path: fullPublicUrl,
+        url: fullPublicUrl,
+        user_image: phpFieldName === "docs_st_image" ? fullPublicUrl : undefined,
+        data: {
+          ...backendData,
+          [phpFieldName]: fullPublicUrl,
+        },
       });
     }
 
+    // ── User / Student Profile Image Upload Branch ──────────────────────────
     // 1. Validate File Size (max 5 MB -> 422)
     if (file.size > MAX_IMAGE_SIZE_BYTES) {
       return NextResponse.json(
@@ -179,54 +230,112 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const bytes = await file.arrayBuffer();
-    const fileBuffer = Buffer.from(bytes);
     const userIdNum = rawUserId ? parseInt(String(rawUserId), 10) : NaN;
 
     // If userId is provided and valid (logged-in user/student update flow)
     if (!isNaN(userIdNum) && userIdNum > 0) {
-      const publicPath = await updateUserProfileImage({
-        userId: userIdNum,
-        fileBuffer,
-        originalFilename: file.name,
-        currentPublicPath,
-        role,
-        isStudent,
+      const bytes = await file.arrayBuffer();
+      const blob = new Blob([bytes], { type: file.type || "image/jpeg" });
+      const phpForm = new FormData();
+      phpForm.append("user_image", blob, file.name || `profile.${ext}`);
+
+      // Forward file upload directly to PHP REST API (FileUploadHelper)
+      const phpRes = await fetch(`${PHP_API}/user/image`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "X-User-Id": String(userIdNum),
+          "X-User-Role": role,
+        },
+        body: phpForm,
       });
 
-      const browserUrl = getBrowserFileUrl(publicPath);
+      const json = await phpRes.json().catch(() => null);
+
+      if (!phpRes.ok || !json?.success) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: json?.message || "Failed to upload image to PHP backend.",
+          },
+          { status: phpRes.status || 500 }
+        );
+      }
+
+      const rawReturnedPath = json?.data?.user_image;
+      const fullPublicUrl = toFullPublicUrl(rawReturnedPath);
+
+      // Ensure MySQL database stores the full canonical public URL string
+      if (fullPublicUrl) {
+        try {
+          await fetch(`${PHP_API}/user/profile`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-User-Id": String(userIdNum),
+              "X-User-Role": role,
+              "X-HTTP-Method-Override": "PATCH",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({
+              user_image: fullPublicUrl,
+              _method: "PATCH",
+            }),
+          });
+        } catch (syncErr) {
+          console.warn("[Upload API] Notice syncing full user_image URL to DB:", syncErr);
+        }
+
+        // If student, also sync student record
+        if (isStudent) {
+          try {
+            await fetch(`${PHP_API}/student/me`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-User-Id": String(userIdNum),
+                "X-User-Role": "student",
+                "X-HTTP-Method-Override": "PATCH",
+                Accept: "application/json",
+              },
+              body: JSON.stringify({
+                user_image: fullPublicUrl,
+                _method: "PATCH",
+              }),
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
 
       return NextResponse.json({
         success: true,
         message: "Profile photo uploaded successfully.",
         filename: `profile.${ext}`,
-        db_path: publicPath,
-        url: browserUrl,
-        user_image: publicPath,
+        db_path: fullPublicUrl,
+        path: fullPublicUrl,
+        url: fullPublicUrl,
+        user_image: fullPublicUrl,
         role,
         is_student: isStudent,
+        data: {
+          ...json?.data,
+          user_image: fullPublicUrl,
+        },
       });
     }
 
-    // Pre-registration flow (no userId assigned yet -> save to temp)
-    const { publicPath, filename } = await saveTempImage(
-      fileBuffer,
-      file.name
-    );
-    const browserUrl = getBrowserFileUrl(publicPath);
-
+    // Pre-registration flow (no userId assigned yet)
     return NextResponse.json({
       success: true,
-      message: "Image uploaded for registration.",
-      filename,
-      db_path: publicPath,
-      url: browserUrl,
-      user_image: publicPath,
+      message: "Image accepted for registration.",
+      filename: file.name,
       role: "user",
       is_student: false,
     });
   } catch (error: any) {
-    console.error("[Upload API] Error saving file:", error);
+    console.error("[Upload API] Error forwarding file to PHP:", error);
     return NextResponse.json(
       {
         success: false,

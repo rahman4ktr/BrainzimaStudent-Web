@@ -191,7 +191,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // CASE B: Course Admission Enrollment (course_id provided)
+    // CASE B: Course Admission Enrollment / Online Course Purchase
     // ──────────────────────────────────────────────────────────────────────────
     const courseId = Number(course_id);
     if (!courseId || isNaN(courseId)) {
@@ -201,6 +201,84 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const isOnline = Boolean(
+      body.is_online ||
+      body.course_type === "online" ||
+      body.online ||
+      body.type === "online"
+    );
+
+    // ── B.1: Online Course Purchase Flow ──
+    if (isOnline) {
+      // 1. Check if user already purchased this online course
+      const { isOnlineCoursePurchased } = await import("@/lib/onlineCoursePurchaseStore");
+      const alreadyOwned = await isOnlineCoursePurchased(userId, courseId, userRole);
+      if (alreadyOwned) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "You have already purchased this online course.",
+          },
+          { status: 409 }
+        );
+      }
+
+      // 2. Fetch official online course fee from backend
+      const onlineCourseRes = await fetch(`${PHP_API}/onlinecoures/${courseId}`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const onlineCourseData = await onlineCourseRes.json().catch(() => null);
+
+      if (!onlineCourseRes.ok || !onlineCourseData?.data) {
+        return NextResponse.json(
+          { success: false, message: "Online course details could not be verified from backend." },
+          { status: 404 }
+        );
+      }
+
+      const officialFee = Number(onlineCourseData.data.course_fee || 0);
+      const cleanDiscount = Math.max(0, Math.min(Number(discount || 0), officialFee));
+      const netPayable = Math.max(0, officialFee - cleanDiscount);
+
+      if (numAmount > netPayable) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: `Payment amount cannot exceed fee of ₹${netPayable.toLocaleString("en-IN")}.`,
+          },
+          { status: 400 }
+        );
+      }
+
+      const razorpay = getRazorpayClient();
+      const amountInPaise = Math.round(numAmount * 100);
+      const receipt = `rcpt_onl_${Date.now()}_u${userId}_c${courseId}`.slice(0, 40);
+
+      const order = await razorpay.orders.create({
+        amount: amountInPaise,
+        currency: "INR",
+        receipt,
+        notes: {
+          type: "online_course_purchase",
+          user_id: String(userId),
+          course_id: String(courseId),
+          course_name: String(onlineCourseData.data.course_name || ""),
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          order_id: order.id,
+          amount: order.amount,
+          currency: order.currency,
+          key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID || key_id,
+        },
+      });
+    }
+
+    // ── B.2: Offline Course Admission Flow ──
     // 1. Check if authenticated user is already enrolled in this course
     try {
       const enrCheckRes = await fetch(`${PHP_API}/enrollment`, {

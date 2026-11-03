@@ -1,32 +1,21 @@
 // app/api/user/profile/route.ts
-// Handles PUT /api/user/profile
-// Strictly adheres to Brainzima User Profile Image Lifecycle:
-// 1. If updating with new image:
-//    - Archive old image to uploads/delete/user-{user_id}-{timestamp}-{unique}.ext
-//    - Save/move new image to uploads/users/{user_id}/profile.ext
-//    - Update bi_users.user_image with new public path
-// 2. If removing photo (user_image === null):
-//    - Archive old image to uploads/delete/
-//    - Set bi_users.user_image = NULL
-// 3. If updating without image (only name/mobile):
-//    - Keep existing image untouched
-// 4. Returns updated user data including user_image public path
+// Handles PUT and PATCH /api/user/profile
+// Supports both application/json and multipart/form-data.
+// When an image file is uploaded, forwards the binary file directly to PHP REST API.
+// MySQL database stores the full canonical public URL string.
 
 import { NextRequest, NextResponse } from "next/server";
 import {
-  archiveOldImage,
-  finalizeRegistrationImage,
-  updateUserProfileImage,
-  formatDbImagePath,
+  toFullPublicUrl,
   MAX_IMAGE_SIZE_BYTES,
   ALLOWED_EXTENSIONS,
   extractExtension,
-  getBrowserFileUrl,
 } from "@/lib/imageStorage";
 
 const PHP_API =
+  process.env.API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "https://try.ajitdev.com/brainzima/student/api";
+  "https://api.brainzima.com/student/api";
 
 export async function PUT(req: NextRequest) {
   try {
@@ -48,197 +37,119 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    // Support both application/json and multipart/form-data
-    let body: any = {};
-    let fileBuffer: Buffer | null = null;
-    let fileName: string | null = null;
-
     const contentType = req.headers.get("content-type") || "";
+    let body: any = {};
+    let uploadedFile: File | null = null;
+
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
-      const file = formData.get("file") as File | null;
-      if (file) {
-        if (file.size > MAX_IMAGE_SIZE_BYTES) {
-          return NextResponse.json(
-            { success: false, message: "Profile image must be 5 MB or smaller." },
-            { status: 422 }
-          );
-        }
-        const ext = extractExtension(file.name || "");
-        if (!ALLOWED_EXTENSIONS.includes(ext)) {
-          return NextResponse.json(
-            { success: false, message: "Invalid file type. Allowed formats: jpg, jpeg, png, webp." },
-            { status: 422 }
-          );
-        }
-        fileBuffer = Buffer.from(await file.arrayBuffer());
-        fileName = file.name;
+      const rawFile = (formData.get("user_image") || formData.get("file")) as File | null;
+      if (rawFile && typeof rawFile === "object" && typeof rawFile.arrayBuffer === "function") {
+        uploadedFile = rawFile;
       }
+
       body = {
         name: formData.get("name")?.toString() || undefined,
         email: formData.get("email")?.toString() || undefined,
         mobile: formData.get("mobile")?.toString() || undefined,
-        user_image: formData.get("user_image")?.toString() || undefined,
+        user_image: typeof formData.get("user_image") === "string"
+          ? formData.get("user_image")?.toString()
+          : undefined,
+        user_role: formData.get("user_role")?.toString() || userRole,
+        role: formData.get("role")?.toString() || userRole,
       };
     } else {
       body = await req.json().catch(() => ({}));
     }
 
-    // 1. Fetch current user from backend to inspect existing user_image
-    let currentImage: string | null = null;
-    let currentUser: any = null;
-    try {
-      const meRes = await fetch(`${PHP_API}/user/${userId}`, {
-        headers: {
-          "X-User-Id": String(userId),
-          "X-User-Role": userRole,
-          Accept: "application/json",
-        },
-      });
-      if (meRes.ok) {
-        const meJson = await meRes.json();
-        if (meJson.success && meJson.data) {
-          currentUser = meJson.data;
-          currentImage = currentUser.user_image || null;
-        }
-      }
-    } catch {
-      /* ignore fetch error */
-    }
-
     const isStudent =
-      userRole === "student" ||
-      currentUser?.user_role === "student" ||
-      currentUser?.role === "student" ||
-      currentUser?.is_student === true ||
-      Boolean(currentUser?.student_id) ||
-      body.is_student === true ||
-      body.is_student === "true";
+      userRole.toLowerCase() === "student" ||
+      body.user_role?.toLowerCase() === "student" ||
+      body.role?.toLowerCase() === "student" ||
+      body.is_student === true;
     const targetRole = isStudent ? "student" : "user";
 
-    const payloadToForward: Record<string, any> = {
-      user_role: targetRole,
-      role: targetRole,
-    };
-    if (body.name !== undefined) payloadToForward.name = body.name;
-    if (body.email !== undefined) payloadToForward.email = body.email;
-    if (body.mobile !== undefined) payloadToForward.mobile = body.mobile;
-    if (body.last_login_at !== undefined) payloadToForward.last_login_at = body.last_login_at;
-    if (body.last_login_ip !== undefined) payloadToForward.last_login_ip = body.last_login_ip;
-    if (body.ip !== undefined) payloadToForward.ip = body.ip;
+    let finalUserImageUrl: string | null | undefined = undefined;
 
-    let finalUserImagePath: string | null | undefined = undefined;
+    // ── 1. If an actual File was sent in FormData, forward it to PHP ─────────
+    if (uploadedFile) {
+      if (uploadedFile.size > MAX_IMAGE_SIZE_BYTES) {
+        return NextResponse.json(
+          { success: false, message: "Profile image must be 5 MB or smaller." },
+          { status: 422 }
+        );
+      }
+      const ext = extractExtension(uploadedFile.name || "");
+      if (!ALLOWED_EXTENSIONS.includes(ext)) {
+        return NextResponse.json(
+          { success: false, message: "Invalid file type. Allowed formats: jpg, jpeg, png, webp." },
+          { status: 422 }
+        );
+      }
 
-    // 2. Handle Image Lifecycle (Users vs Students)
-    if (fileBuffer && fileName) {
-      // Direct file upload: archive old image and save new
-      const uploadedPath = await updateUserProfileImage({
-        userId,
-        fileBuffer,
-        originalFilename: fileName,
-        currentPublicPath: currentImage,
-        role: targetRole,
-        isStudent,
+      const bytes = await uploadedFile.arrayBuffer();
+      const blob = new Blob([bytes], { type: uploadedFile.type || "image/jpeg" });
+      const phpForm = new FormData();
+      phpForm.append("user_image", blob, uploadedFile.name || `profile.${ext}`);
+
+      const phpImgRes = await fetch(`${PHP_API}/user/image`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "X-User-Id": String(userId),
+          "X-User-Role": targetRole,
+        },
+        body: phpForm,
       });
-      finalUserImagePath = formatDbImagePath(uploadedPath);
-      payloadToForward.user_image = finalUserImagePath;
+
+      const imgJson = await phpImgRes.json().catch(() => null);
+      if (phpImgRes.ok && imgJson?.success && imgJson?.data?.user_image) {
+        finalUserImageUrl = toFullPublicUrl(imgJson.data.user_image);
+      } else {
+        return NextResponse.json(
+          {
+            success: false,
+            message: imgJson?.message || "Failed to upload image to PHP backend.",
+          },
+          { status: phpImgRes.status || 500 }
+        );
+      }
     } else if ("user_image" in body) {
       const rawImg = body.user_image;
-
       if (rawImg === null || rawImg === "" || rawImg === "null" || rawImg === "remove") {
-        // "Remove Photo" flow: archive current image to uploads/delete/ and set NULL
-        if (currentImage) {
-          await archiveOldImage(userId, currentImage, targetRole);
-        }
-        finalUserImagePath = null;
-        payloadToForward.user_image = null;
-      } else if (typeof rawImg === "string" && rawImg.trim() !== "") {
-        const cleanPath = rawImg.trim();
-        // If image path has changed (e.g. uploaded via /api/upload to temp or new path)
-        if (cleanPath !== currentImage) {
-          if (cleanPath.includes("temp") || cleanPath.startsWith("data:")) {
-            // Archive old and move temp to permanent uploads/students or uploads/users
-            if (currentImage) {
-              await archiveOldImage(userId, currentImage, targetRole);
-            }
-            finalUserImagePath = await finalizeRegistrationImage(userId, cleanPath, targetRole);
-          } else {
-            finalUserImagePath = cleanPath;
-          }
-          finalUserImagePath = formatDbImagePath(finalUserImagePath);
-          payloadToForward.user_image = finalUserImagePath;
-        } else {
-          // Unchanged image: do NOT modify or move
-          finalUserImagePath = formatDbImagePath(currentImage);
-        }
-      }
-    }
-
-    // 3. Forward update to PHP backend
-    let phpSuccess = false;
-    let phpResponseData: any = null;
-
-    // 3A. If user_image was updated, call dedicated avatar endpoint
-    if (finalUserImagePath !== undefined) {
-      try {
-        await fetch(`${PHP_API}/user/image`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-User-Id": String(userId),
-            "X-User-Role": targetRole,
-            "X-HTTP-Method-Override": "PATCH",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            user_image: finalUserImagePath,
-            user_role: targetRole,
-            role: targetRole,
-          }),
-        });
-      } catch (imgErr) {
-        console.warn("[Profile API] Error calling /user/image:", imgErr);
-      }
-
-      // If student, sync with student endpoints
-      if (isStudent) {
+        finalUserImageUrl = null;
+        // Also call DELETE on PHP /user/image
         try {
-          await fetch(`${PHP_API}/student/me`, {
-            method: "POST",
+          await fetch(`${PHP_API}/user/image`, {
+            method: "DELETE",
             headers: {
-              "Content-Type": "application/json",
-              "X-User-Id": String(userId),
-              "X-User-Role": "student",
-              "X-HTTP-Method-Override": "PATCH",
               Accept: "application/json",
+              "X-User-Id": String(userId),
+              "X-User-Role": targetRole,
             },
-            body: JSON.stringify({ user_image: finalUserImagePath }),
           });
         } catch {
           /* ignore */
         }
-
-        const studentId = currentUser?.student_id;
-        if (studentId) {
-          try {
-            await fetch(`${PHP_API}/document/student/${studentId}`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-User-Id": String(userId),
-                "X-User-Role": "student",
-                Accept: "application/json",
-              },
-              body: JSON.stringify({ docs_st_image: finalUserImagePath }),
-            });
-          } catch {
-            /* ignore */
-          }
-        }
+      } else if (typeof rawImg === "string" && rawImg.trim() !== "") {
+        finalUserImageUrl = toFullPublicUrl(rawImg.trim());
       }
     }
 
-    // 3B. Forward to PHP /user/profile with Method Override
+    // ── 2. Forward profile fields to PHP backend ────────────────────────────
+    const payloadToForward: Record<string, any> = {
+      _method: "PATCH",
+    };
+    if (body.name !== undefined) payloadToForward.name = body.name;
+    if (body.email !== undefined) payloadToForward.email = body.email;
+    if (body.mobile !== undefined) payloadToForward.mobile = body.mobile;
+    if (finalUserImageUrl !== undefined) {
+      payloadToForward.user_image = finalUserImageUrl;
+    }
+
+    let phpSuccess = false;
+    let phpResponseData: any = null;
+
     try {
       const phpRes = await fetch(`${PHP_API}/user/profile`, {
         method: "POST",
@@ -249,100 +160,68 @@ export async function PUT(req: NextRequest) {
           "X-HTTP-Method-Override": "PATCH",
           Accept: "application/json",
         },
-        body: JSON.stringify({ ...payloadToForward, _method: "PATCH" }),
+        body: JSON.stringify(payloadToForward),
       });
 
-      const phpData = await phpRes.json().catch(() => null);
-
-      if (phpRes.status === 422) {
-        return NextResponse.json(
-          {
-            success: false,
-            message: phpData?.message || "Validation failed.",
-            errors: phpData?.errors || {},
-          },
-          { status: 422 }
-        );
-      }
-
-      if (phpRes.status === 409) {
-        return NextResponse.json(
-          {
-            success: false,
-            message: phpData?.message || "Duplicate entry conflict.",
-            errors: phpData?.errors || {},
-          },
-          { status: 409 }
-        );
-      }
-
-      if (phpRes.ok && phpData?.success) {
+      const phpJson = await phpRes.json().catch(() => null);
+      if (phpRes.ok && phpJson?.success) {
         phpSuccess = true;
-        phpResponseData = phpData;
+        phpResponseData = phpJson.data;
+      } else if (!phpRes.ok && phpJson) {
+        return NextResponse.json(phpJson, { status: phpRes.status });
       }
-    } catch (phpErr) {
-      console.warn("[Profile API] Notice forwarding to PHP backend:", phpErr);
+    } catch (profErr) {
+      console.warn("[Profile API] Error calling /user/profile:", profErr);
     }
 
-    // Fallback: Native PUT /user/profile
-    if (!phpSuccess) {
+    // If student and user_image was updated, sync student profile as well
+    if (isStudent && finalUserImageUrl !== undefined) {
       try {
-        const putRes = await fetch(`${PHP_API}/user/profile`, {
-          method: "PUT",
+        await fetch(`${PHP_API}/student/me`, {
+          method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-User-Id": String(userId),
-            "X-User-Role": targetRole,
+            "X-User-Role": "student",
+            "X-HTTP-Method-Override": "PATCH",
             Accept: "application/json",
           },
-          body: JSON.stringify(payloadToForward),
+          body: JSON.stringify({
+            user_image: finalUserImageUrl,
+            _method: "PATCH",
+          }),
         });
-        const putData = await putRes.json().catch(() => null);
-        if (putRes.ok && putData?.success) {
-          phpSuccess = true;
-          phpResponseData = putData;
-        }
       } catch {
         /* ignore */
       }
     }
 
-    if (phpSuccess && phpResponseData) {
-      return NextResponse.json(phpResponseData);
-    }
-
-    // Fallback response with synchronized fields
-    const updatedResponseUser = {
+    const mergedData = {
       user_id: userId,
-      name: body.name || currentUser?.name || "User",
-      email: body.email || currentUser?.email || "",
-      mobile: body.mobile !== undefined ? body.mobile : (currentUser?.mobile ?? null),
-      user_role: targetRole,
-      role: targetRole,
-      is_student: isStudent,
-      student_id: currentUser?.student_id ?? null,
-      registration_number: currentUser?.registration_number ?? null,
-      user_image:
-        finalUserImagePath !== undefined
-          ? finalUserImagePath
-          : (currentImage ? formatDbImagePath(currentImage) : null),
-      last_login_at: body.last_login_at || currentUser?.last_login_at || null,
-      last_login_ip: body.last_login_ip || currentUser?.last_login_ip || null,
+      ...(phpResponseData || {}),
+      ...(payloadToForward.name ? { name: payloadToForward.name } : {}),
+      ...(payloadToForward.mobile ? { mobile: payloadToForward.mobile } : {}),
+      ...(finalUserImageUrl !== undefined ? { user_image: finalUserImageUrl } : {}),
     };
+
+    if (mergedData.user_image) {
+      mergedData.user_image = toFullPublicUrl(mergedData.user_image);
+    }
 
     return NextResponse.json({
       success: true,
       message: "Profile updated successfully.",
-      data: updatedResponseUser,
+      data: mergedData,
     });
   } catch (error: any) {
-    console.error("[Profile API] PUT /api/user/profile error:", error);
+    console.error("[Profile API] Error:", error);
     return NextResponse.json(
-      { success: false, message: "Unable to save profile image." },
+      { success: false, message: error?.message || "Failed to update profile." },
       { status: 500 }
     );
   }
 }
 
-export const PATCH = PUT;
-export const POST = PUT;
+export async function PATCH(req: NextRequest) {
+  return PUT(req);
+}

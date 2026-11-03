@@ -28,6 +28,7 @@ import {
   UploadCloud,
   Check,
   Banknote,
+  Tag,
 } from "lucide-react";
 import {
   getCourses,
@@ -44,7 +45,11 @@ import {
   type FranchiseeItem,
   type AdmissionFormData,
   type EnrollmentItem,
+  validateOfflineCoupon,
+  type CouponValidationData,
 } from "@/lib/api";
+import { CouponOfferCards } from "@/components/CouponOfferCards";
+import { fireCouponConfetti } from "@/lib/confetti";
 import {
   getSession,
   updateSession,
@@ -167,10 +172,19 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
   // ── Course-Specific Data (Selected for any enrollment) ─────────────────────
   const [selectedBatchId, setSelectedBatchId] = useState<string>("");
   const [discount, setDiscount] = useState<number>(0);
+  const [paymentMethod, setPaymentMethod] = useState<"online" | "center">("online");
   const [paymentType, setPaymentType] = useState<"full" | "partial">("full");
   const [partialAmount, setPartialAmount] = useState<number>(5000);
   const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+
+  // ── Online Coupon State ────────────────────────────────────────────────────
+  const [couponInput, setCouponInput] = useState<string>("");
+  const [isValidatingCoupon, setIsValidatingCoupon] = useState<boolean>(false);
+  const [couponError, setCouponError] = useState<string | null>(null);
+  const [couponSuccess, setCouponSuccess] = useState<string | null>(null);
+  const [appliedCoupon, setAppliedCoupon] = useState<(CouponValidationData & { course_id?: number }) | null>(null);
+  const validatingCourseIdRef = React.useRef<number | null>(null);
 
   // ── Final Success Details ─────────────────────────────────────────────────
   const [enrollmentSuccess, setEnrollmentSuccess] = useState<any | null>(null);
@@ -409,14 +423,117 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
 
   // Partial or full payment computation
   const amountToPay = useMemo(() => {
+    if (paymentMethod === "center") {
+      return 0;
+    }
     if (paymentType === "full") {
       return finalFee;
     }
     const cleanPartial = Math.max(1000, Number(partialAmount) || 1000);
     return Math.min(cleanPartial, finalFee);
-  }, [paymentType, finalFee, partialAmount]);
+  }, [paymentMethod, paymentType, finalFee, partialAmount]);
 
   const balanceDue = Math.max(0, finalFee - amountToPay);
+
+  // Center Payment deposit amount computation
+  const centerAmountToPay = finalFee;
+  const centerBalanceDue = 0;
+
+  // ── Revalidate or clear coupon when selected course changes ────────────────
+  useEffect(() => {
+    if (appliedCoupon && appliedCoupon.course_id !== Number(selectedCourseId)) {
+      setAppliedCoupon(null);
+      setDiscount(0);
+      setCouponSuccess(null);
+      setCouponError("Selected course changed. Previously applied coupon was removed.");
+    }
+  }, [selectedCourseId, appliedCoupon]);
+
+  // ── Coupon Validation & Apply Handlers ─────────────────────────────────────
+  const handleApplyCoupon = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setCouponError(null);
+    setCouponSuccess(null);
+
+    const code = couponInput.trim().toUpperCase();
+    if (!code) {
+      setCouponError("Please enter a coupon code.");
+      return;
+    }
+
+    if (!selectedCourse?.course_id) {
+      setCouponError("Please select a course first.");
+      return;
+    }
+
+    const targetCourseId = Number(selectedCourse.course_id);
+    validatingCourseIdRef.current = targetCourseId;
+    setIsValidatingCoupon(true);
+
+    try {
+      const res = await validateOfflineCoupon(
+        {
+          coupon_code: code,
+          course_id: targetCourseId,
+          user_id: currentUser?.user_id,
+          email: email || currentUser?.email || undefined,
+          mobile: mobile || currentUser?.mobile || undefined,
+        },
+        currentUser?.user_id,
+        currentUser?.role === "student" ? "student" : "user"
+      );
+
+      // Prevent race conditions: check if course changed while request was in-flight
+      if (validatingCourseIdRef.current !== Number(selectedCourse?.course_id)) {
+        return;
+      }
+
+      if (!res.success || !res.data || !res.data.is_valid) {
+        setAppliedCoupon(null);
+        setDiscount(0);
+        const errMsg =
+          res.message ||
+          (res.errors && Object.values(res.errors)[0]) ||
+          "Invalid or inapplicable coupon code.";
+        setCouponError(errMsg);
+        return;
+      }
+
+      const validatedData = res.data;
+      const verifiedDiscount = Number(validatedData.discount_amount) || 0;
+
+      if (verifiedDiscount <= 0) {
+        setAppliedCoupon(null);
+        setDiscount(0);
+        setCouponError("This coupon does not provide any discount for this course.");
+        return;
+      }
+
+      setAppliedCoupon({
+        ...validatedData,
+        course_id: targetCourseId,
+      });
+      setDiscount(verifiedDiscount);
+      setCouponSuccess(
+        `Coupon "${validatedData.coupon_code}" applied! You saved ₹${verifiedDiscount.toLocaleString("en-IN")}.`
+      );
+      fireCouponConfetti();
+    } catch (err: any) {
+      setAppliedCoupon(null);
+      setDiscount(0);
+      setCouponError(err?.message || "Failed to validate coupon code.");
+    } finally {
+      setIsValidatingCoupon(false);
+    }
+  };
+
+  const handleRemoveCoupon = () => {
+    setAppliedCoupon(null);
+    setDiscount(0);
+    setCouponInput("");
+    setCouponError(null);
+    setCouponSuccess(null);
+  };
 
   // ── File Selection Handlers for Documents ─────────────────────────────────
   const handleFileSelect = (
@@ -731,6 +848,7 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
     setPaymentError(null);
 
     // Build admission details payload only for FIRST enrollment
+    const cleanReferredBy = (referredBy || "Online Website").trim();
     const admissionPayload: AdmissionFormData = isExistingStudent
       ? {}
       : {
@@ -745,7 +863,9 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
           st_city: city.trim(),
           st_pincode: pincode.trim(),
           st_qualification: qualification.trim(),
-          st_referredby: referredBy.trim(),
+          st_referredby: cleanReferredBy,
+          referred_by: cleanReferredBy,
+          referredby: cleanReferredBy,
         };
 
     try {
@@ -757,6 +877,9 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
           centre_id: Number(selectedCentreId),
           batch_id: selectedBatchId ? Number(selectedBatchId) : null,
           discount: cleanDiscount,
+          coupon_code: appliedCoupon?.coupon_code,
+          payment_method: "razorpay",
+          payment_mode: "online",
           razorpay_payment_id: rzpResponse.razorpay_payment_id,
           razorpay_order_id: rzpResponse.razorpay_order_id,
           razorpay_signature: rzpResponse.razorpay_signature,
@@ -765,6 +888,9 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
           name: name.trim(),
           email: email.trim(),
           mobile: mobile.trim(),
+          st_referredby: cleanReferredBy,
+          referred_by: cleanReferredBy,
+          referredby: cleanReferredBy,
         },
         isExistingStudent ? "student" : "user"
       );
@@ -893,6 +1019,7 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
         franchisee_name: selectedCentre?.franchisee_name || "Brainzima Study Centre",
         franchisee_adrs: selectedCentre?.franchisee_adrs || "India",
         amount_paid: enrolledData.amount_paid || amountToPay,
+        payment_mode: "online",
         payment_reference: rzpResponse.razorpay_payment_id,
         registration_number: returnedRegNo,
         student_id: returnedStudentId,
@@ -923,6 +1050,214 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
         variant: "error",
         title: "Enrollment Failed",
         description: err.message || "Could not complete admission.",
+      });
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  // ── Handle Center Payment Enrollment (No Razorpay / Pay at Desk) ───────────
+  const handleCenterPaymentEnrollment = async () => {
+    setIsProcessingPayment(true);
+    setPaymentError(null);
+
+    const cleanReferredBy = (referredBy || "Online Website").trim();
+    const admissionPayload: AdmissionFormData = isExistingStudent
+      ? {}
+      : {
+          st_fname: fname.trim(),
+          st_mname: mname.trim(),
+          st_dob: dob,
+          st_gender: gender,
+          st_mobile_parent: parentMobile.trim(),
+          st_aadhaar: aadhaar.trim(),
+          st_address: address.trim(),
+          st_state: state.trim(),
+          st_city: city.trim(),
+          st_pincode: pincode.trim(),
+          st_qualification: qualification.trim(),
+          st_referredby: cleanReferredBy,
+          referred_by: cleanReferredBy,
+          referredby: cleanReferredBy,
+        };
+
+    try {
+      const res = await createEnrollment(
+        currentUser!.user_id,
+        {
+          course_id: Number(selectedCourse!.course_id),
+          centre_id: Number(selectedCentreId),
+          batch_id: selectedBatchId ? Number(selectedBatchId) : null,
+          discount: cleanDiscount,
+          coupon_code: appliedCoupon?.coupon_code,
+          payment_method: "center",
+          payment_mode: "center",
+          center_deposit_amount: centerAmountToPay,
+          student_id: isExistingStudent ? existingStudentId : undefined,
+          admission: admissionPayload,
+          name: name.trim(),
+          email: email.trim(),
+          mobile: mobile.trim(),
+          st_referredby: cleanReferredBy,
+          referred_by: cleanReferredBy,
+          referredby: cleanReferredBy,
+        },
+        isExistingStudent ? "student" : "user"
+      );
+
+      if (!res.success || !res.data) {
+        if (
+          res.message?.toLowerCase().includes("already enrolled") ||
+          res.errors?.enrollment?.toLowerCase().includes("already enrolled")
+        ) {
+          toast({
+            variant: "info",
+            title: "Already Enrolled",
+            description: "You are already enrolled in this course. Redirecting to your courses...",
+          });
+          setTimeout(() => router.push("/student/courses"), 1500);
+          return;
+        }
+
+        throw new Error(
+          res.message || "Failed to register center admission. Please contact support."
+        );
+      }
+
+      const enrolledData = res.data;
+      const returnedStudentId = Number(enrolledData.student_id || existingStudentId);
+      // For center payment, registration number is NOT assigned yet (null)
+      const returnedRegNo = enrolledData.registration_number || null;
+
+      // Upload Selected Documents ONLY on First-Time Enrollment
+      const uploadSuccesses: string[] = [];
+      const uploadFailures: { label: string; error: string }[] = [];
+
+      if (!isExistingStudent) {
+        const docUploadConfigs: {
+          key: "profile" | "aadhaar_front" | "aadhaar_back" | "qualification";
+          docType: "docs_st_image" | "docs_st_aadhaar_front" | "docs_st_aadhaar_back" | "docs_st_qualification";
+          label: string;
+        }[] = [
+          { key: "profile", docType: "docs_st_image", label: "Student Photo" },
+          { key: "aadhaar_front", docType: "docs_st_aadhaar_front", label: "Aadhaar (Front)" },
+          { key: "aadhaar_back", docType: "docs_st_aadhaar_back", label: "Aadhaar (Back)" },
+          { key: "qualification", docType: "docs_st_qualification", label: "Qualification Proof" },
+        ];
+
+        const uploadedDocPaths: {
+          docs_st_image?: string;
+          docs_st_aadhaar_front?: string;
+          docs_st_aadhaar_back?: string;
+          docs_st_qualification?: string;
+        } = {};
+
+        for (const config of docUploadConfigs) {
+          const fileToUpload = selectedDocFiles[config.key];
+          if (!fileToUpload) continue;
+
+          try {
+            const uploadRes = await uploadStudentDocumentFile(
+              fileToUpload,
+              config.docType,
+              returnedStudentId,
+              returnedRegNo || "",
+              currentUser!.user_id
+            );
+
+            const returnedPath = uploadRes.path || uploadRes.db_path;
+            if (uploadRes.success && returnedPath) {
+              uploadedDocPaths[config.docType] = returnedPath;
+              uploadSuccesses.push(config.label);
+            } else {
+              uploadFailures.push({
+                label: config.label,
+                error: uploadRes.message || "Document upload failed.",
+              });
+            }
+          } catch (uploadErr: any) {
+            uploadFailures.push({
+              label: config.label,
+              error: uploadErr?.message || "Document upload network failure.",
+            });
+          }
+        }
+
+        if (Object.keys(uploadedDocPaths).length > 0) {
+          try {
+            await saveStudentDocuments(
+              currentUser!.user_id,
+              returnedStudentId,
+              uploadedDocPaths
+            );
+          } catch (saveErr) {
+            console.warn("[Enrollment] Notice saving student document paths:", saveErr);
+          }
+        }
+
+        let finalUserImage = userImage;
+        if (uploadedDocPaths.docs_st_image) {
+          finalUserImage = uploadedDocPaths.docs_st_image;
+          try {
+            await updateUserProfile(currentUser!.user_id, "student", {
+              user_image: finalUserImage,
+            });
+          } catch (syncErr) {
+            console.warn("[Enrollment] Notice syncing user_image on profile:", syncErr);
+          }
+        }
+
+        // Update session for NEW student - registration_number remains null!
+        updateSession({
+          role: "student",
+          is_student: true,
+          student_id: returnedStudentId,
+          registration_number: returnedRegNo,
+          centre_id: selectedCentreId,
+          user_image: finalUserImage,
+        });
+      } else {
+        updateSession({
+          centre_id: selectedCentreId,
+        });
+      }
+
+      setEnrollmentSuccess({
+        ...enrolledData,
+        course_name: selectedCourse!.course_name,
+        course_code: selectedCourse!.course_code,
+        franchisee_name: selectedCentre?.franchisee_name || "Brainzima Study Centre",
+        franchisee_adrs: selectedCentre?.franchisee_adrs || "India",
+        amount_paid: 0,
+        center_deposit_amount: centerAmountToPay,
+        center_balance_due: centerBalanceDue,
+        payment_mode: "center",
+        payment_reference: "PAY_AT_CENTRE",
+        registration_number: returnedRegNo,
+        student_id: returnedStudentId,
+      });
+
+      setDocUploadSuccessList(uploadSuccesses);
+      setDocUploadErrors(uploadFailures);
+
+      // Advance to Confirmation Step
+      setCurrentStep(maxStep);
+
+      toast({
+        variant: "success",
+        title: "Admission Registered! (Pay at Study Centre)",
+        description: `Student ID #${returnedStudentId} generated! Visit ${selectedCentre?.franchisee_name || "your study centre"} to complete fee deposit and activate your official Registration ID.`,
+        duration: 8000,
+      });
+    } catch (err: any) {
+      console.error("[Center Enrollment Error]:", err);
+      setPaymentError(
+        err.message || "Failed to register center admission. Please contact support."
+      );
+      toast({
+        variant: "error",
+        title: "Registration Failed",
+        description: err.message || "Could not register admission.",
       });
     } finally {
       setIsProcessingPayment(false);
@@ -970,7 +1305,7 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
   return (
     <div className="min-h-screen bg-[#F8FAFC] pb-16">
       {/* ── Top Bar / Header ─────────────────────────────────────────────── */}
-      <div className="bg-white border-b border-[#E2E8F0] sticky top-0 z-30 shadow-xs">
+      <div className="bg-white border-b border-[#E2E8F0] sticky top-0 z-10 shadow-xs">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
@@ -1337,74 +1672,204 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                     </div>
                   </div>
 
-                  {/* Document Uploads Preview (Optional at Admission) */}
+                  {/* Document Uploads Preview (All 4 Admission Documents) */}
                   <div className="border-t border-[#F1F5F9] pt-4">
-                    <h3 className="text-xs font-bold text-[#0F172A] mb-1">
-                      Identification &amp; Academic Documents (Optional)
-                    </h3>
+                    <div className="flex items-center justify-between mb-1">
+                      <h3 className="text-xs font-bold text-[#0F172A] flex items-center gap-1.5">
+                        <UploadCloud className="w-4 h-4 text-[#5B21F4]" />
+                        <span>Admission Verification Documents (Optional at Admission)</span>
+                      </h3>
+                      <span className="text-[10px] font-semibold text-[#64748B] bg-[#F1F5F9] px-2 py-0.5 rounded">
+                        4 Documents
+                      </span>
+                    </div>
                     <p className="text-[11px] text-[#64748B] mb-3">
-                      You can attach your photo and Aadhaar card now or upload them anytime later from your Student Portal.
+                      Attach your documents now for instant verification or upload them anytime later from your Student Portal.
                     </p>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {/* Photo */}
-                      <div className="border border-dashed border-[#CBD5E1] hover:border-[#5B21F4] rounded-xl p-3 bg-[#F8FAFC] flex items-center justify-between transition-colors">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          {previewProfileUrl ? (
-                            <img
-                              src={previewProfileUrl}
-                              alt="Profile preview"
-                              className="w-8 h-8 rounded-full object-cover shrink-0"
-                            />
-                          ) : (
-                            <div className="w-8 h-8 rounded-full bg-[#E2E8F0] flex items-center justify-center text-[#64748B] shrink-0">
-                              <User className="w-4 h-4" />
+                      {/* 1. Passport Photo */}
+                      <div className={`border rounded-xl p-3 transition-all ${
+                        docFileNames.profile
+                          ? "border-emerald-300 bg-emerald-50/40"
+                          : "border-dashed border-[#CBD5E1] hover:border-[#5B21F4] bg-[#F8FAFC]"
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            {previewProfileUrl ? (
+                              <img
+                                src={previewProfileUrl}
+                                alt="Profile preview"
+                                className="w-8 h-8 rounded-full object-cover shrink-0 ring-2 ring-emerald-500/30"
+                              />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-[#E2E8F0] flex items-center justify-center text-[#64748B] shrink-0">
+                                <User className="w-4 h-4 text-[#5B21F4]" />
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <p className="text-xs font-bold text-[#1E293B] truncate">
+                                  Passport Photo
+                                </p>
+                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-purple-100 text-[#5B21F4]">
+                                  Photo
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-[#64748B] truncate mt-0.5">
+                                {docFileNames.profile ? (
+                                  <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                    {docFileNames.profile}
+                                  </span>
+                                ) : (
+                                  "JPG, PNG (max 5MB)"
+                                )}
+                              </p>
                             </div>
-                          )}
-                          <div className="min-w-0">
-                            <p className="text-xs font-bold text-[#1E293B] truncate">
-                              Passport Photo
-                            </p>
-                            <p className="text-[10px] text-[#64748B] truncate">
-                              {docFileNames.profile || "JPG, PNG (max 5MB)"}
-                            </p>
                           </div>
+                          <label className="text-[11px] font-bold text-[#5B21F4] hover:text-[#4314B7] bg-white border border-[#CBD5E1] hover:border-[#5B21F4] px-2.5 py-1 rounded-lg cursor-pointer shrink-0 transition-colors shadow-2xs">
+                            {docFileNames.profile ? "Change" : "Browse"}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(e) => handleFileSelect(e, "profile")}
+                            />
+                          </label>
                         </div>
-                        <label className="text-[11px] font-bold text-[#5B21F4] hover:text-[#4314B7] bg-white border border-[#E2E8F0] hover:border-[#5B21F4] px-2.5 py-1 rounded-lg cursor-pointer shrink-0 transition-colors">
-                          Browse
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) => handleFileSelect(e, "profile")}
-                          />
-                        </label>
                       </div>
 
-                      {/* Aadhaar Front */}
-                      <div className="border border-dashed border-[#CBD5E1] hover:border-[#5B21F4] rounded-xl p-3 bg-[#F8FAFC] flex items-center justify-between transition-colors">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-8 h-8 rounded-lg bg-[#E2E8F0] flex items-center justify-center text-[#64748B] shrink-0">
-                            <FileText className="w-4 h-4" />
+                      {/* 2. Aadhaar Card (Front) */}
+                      <div className={`border rounded-xl p-3 transition-all ${
+                        docFileNames.aadhaar_front
+                          ? "border-emerald-300 bg-emerald-50/40"
+                          : "border-dashed border-[#CBD5E1] hover:border-[#5B21F4] bg-[#F8FAFC]"
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-[#E2E8F0] flex items-center justify-center text-[#64748B] shrink-0">
+                              <CreditCard className="w-4 h-4 text-[#08A66A]" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <p className="text-xs font-bold text-[#1E293B] truncate">
+                                  Aadhaar Card (Front)
+                                </p>
+                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                                  Identity
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-[#64748B] truncate mt-0.5">
+                                {docFileNames.aadhaar_front ? (
+                                  <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                    {docFileNames.aadhaar_front}
+                                  </span>
+                                ) : (
+                                  "PDF, JPG, PNG"
+                                )}
+                              </p>
+                            </div>
                           </div>
-                          <div className="min-w-0">
-                            <p className="text-xs font-bold text-[#1E293B] truncate">
-                              Aadhaar Card (Front)
-                            </p>
-                            <p className="text-[10px] text-[#64748B] truncate">
-                              {docFileNames.aadhaar_front || "PDF, JPG, PNG"}
-                            </p>
-                          </div>
+                          <label className="text-[11px] font-bold text-[#5B21F4] hover:text-[#4314B7] bg-white border border-[#CBD5E1] hover:border-[#5B21F4] px-2.5 py-1 rounded-lg cursor-pointer shrink-0 transition-colors shadow-2xs">
+                            {docFileNames.aadhaar_front ? "Change" : "Browse"}
+                            <input
+                              type="file"
+                              accept="image/*,application/pdf"
+                              className="hidden"
+                              onChange={(e) => handleFileSelect(e, "aadhaar_front")}
+                            />
+                          </label>
                         </div>
-                        <label className="text-[11px] font-bold text-[#5B21F4] hover:text-[#4314B7] bg-white border border-[#E2E8F0] hover:border-[#5B21F4] px-2.5 py-1 rounded-lg cursor-pointer shrink-0 transition-colors">
-                          Browse
-                          <input
-                            type="file"
-                            accept="image/*,application/pdf"
-                            className="hidden"
-                            onChange={(e) => handleFileSelect(e, "aadhaar_front")}
-                          />
-                        </label>
+                      </div>
+
+                      {/* 3. Aadhaar Card (Back) */}
+                      <div className={`border rounded-xl p-3 transition-all ${
+                        docFileNames.aadhaar_back
+                          ? "border-emerald-300 bg-emerald-50/40"
+                          : "border-dashed border-[#CBD5E1] hover:border-[#5B21F4] bg-[#F8FAFC]"
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-[#E2E8F0] flex items-center justify-center text-[#64748B] shrink-0">
+                              <FileText className="w-4 h-4 text-blue-600" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <p className="text-xs font-bold text-[#1E293B] truncate">
+                                  Aadhaar Card (Back)
+                                </p>
+                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
+                                  Address
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-[#64748B] truncate mt-0.5">
+                                {docFileNames.aadhaar_back ? (
+                                  <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                    {docFileNames.aadhaar_back}
+                                  </span>
+                                ) : (
+                                  "Address & QR (PDF, JPG, PNG)"
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                          <label className="text-[11px] font-bold text-[#5B21F4] hover:text-[#4314B7] bg-white border border-[#CBD5E1] hover:border-[#5B21F4] px-2.5 py-1 rounded-lg cursor-pointer shrink-0 transition-colors shadow-2xs">
+                            {docFileNames.aadhaar_back ? "Change" : "Browse"}
+                            <input
+                              type="file"
+                              accept="image/*,application/pdf"
+                              className="hidden"
+                              onChange={(e) => handleFileSelect(e, "aadhaar_back")}
+                            />
+                          </label>
+                        </div>
+                      </div>
+
+                      {/* 4. Academic Qualification Proof */}
+                      <div className={`border rounded-xl p-3 transition-all ${
+                        docFileNames.qualification
+                          ? "border-emerald-300 bg-emerald-50/40"
+                          : "border-dashed border-[#CBD5E1] hover:border-[#5B21F4] bg-[#F8FAFC]"
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-[#E2E8F0] flex items-center justify-center text-[#64748B] shrink-0">
+                              <GraduationCap className="w-4 h-4 text-orange-600" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <p className="text-xs font-bold text-[#1E293B] truncate">
+                                  Academic Qualification
+                                </p>
+                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-orange-100 text-orange-800">
+                                  Record
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-[#64748B] truncate mt-0.5">
+                                {docFileNames.qualification ? (
+                                  <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                    {docFileNames.qualification}
+                                  </span>
+                                ) : (
+                                  "Marksheet / Certificate"
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                          <label className="text-[11px] font-bold text-[#5B21F4] hover:text-[#4314B7] bg-white border border-[#CBD5E1] hover:border-[#5B21F4] px-2.5 py-1 rounded-lg cursor-pointer shrink-0 transition-colors shadow-2xs">
+                            {docFileNames.qualification ? "Change" : "Browse"}
+                            <input
+                              type="file"
+                              accept="image/*,application/pdf"
+                              className="hidden"
+                              onChange={(e) => handleFileSelect(e, "qualification")}
+                            />
+                          </label>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1687,91 +2152,220 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                       Fee Payment &amp; Confirmation
                     </h2>
                     <p className="text-xs text-[#64748B] mt-1">
-                      Pay online securely via Razorpay (UPI, Google Pay, PhonePe, Cards, NetBanking).
+                      Choose to pay online securely via Razorpay or pay directly at your study centre desk.
                     </p>
                   </div>
 
-                  {/* Payment Type Selection */}
+                  {/* Payment Mode Selector: Online vs Centre */}
                   <div className="space-y-3">
                     <label className="text-xs font-bold text-[#1E293B]">
-                      Choose Payment Option
+                      Select Payment Mode *
                     </label>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <button
                         type="button"
-                        onClick={() => setPaymentType("full")}
+                        onClick={() => setPaymentMethod("online")}
                         className={`p-4 rounded-xl border text-left transition-all ${
-                          paymentType === "full"
+                          paymentMethod === "online"
                             ? "border-[#5B21F4] bg-[#F1EEFF] text-[#0F172A] ring-2 ring-[#5B21F4]/15"
                             : "border-[#E2E8F0] hover:border-[#CBD5E1] bg-white text-[#475569]"
                         }`}
                       >
                         <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold">
-                            Full One-Time Fee
+                          <span className="text-xs font-bold flex items-center gap-1.5">
+                            <CreditCard className="w-4 h-4 text-[#5B21F4]" />
+                            Online Payment (Razorpay)
                           </span>
-                          {paymentType === "full" && (
+                          {paymentMethod === "online" && (
                             <CheckCircle2 className="w-4 h-4 text-[#5B21F4]" />
                           )}
                         </div>
-                        <p className="text-base font-black text-[#0F172A] mt-1">
-                          ₹{finalFee.toLocaleString("en-IN")}
-                        </p>
-                        <p className="text-[11px] text-[#64748B] mt-0.5">
-                          Zero dues remaining. Instant full admission clearance.
+                        <p className="text-[11px] text-[#64748B] mt-1.5">
+                          Instant clearance with UPI, Debit/Credit Card, or NetBanking. Official Registration ID generated instantly.
                         </p>
                       </button>
 
                       <button
                         type="button"
-                        onClick={() => setPaymentType("partial")}
+                        onClick={() => setPaymentMethod("center")}
                         className={`p-4 rounded-xl border text-left transition-all ${
-                          paymentType === "partial"
+                          paymentMethod === "center"
                             ? "border-[#5B21F4] bg-[#F1EEFF] text-[#0F172A] ring-2 ring-[#5B21F4]/15"
                             : "border-[#E2E8F0] hover:border-[#CBD5E1] bg-white text-[#475569]"
                         }`}
                       >
                         <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold">
-                            Admission Initial Deposit
+                          <span className="text-xs font-bold flex items-center gap-1.5">
+                            <Building2 className="w-4 h-4 text-[#5B21F4]" />
+                            Pay at Study Centre
                           </span>
-                          {paymentType === "partial" && (
+                          {paymentMethod === "center" && (
                             <CheckCircle2 className="w-4 h-4 text-[#5B21F4]" />
                           )}
                         </div>
-                        <p className="text-base font-black text-[#0F172A] mt-1">
-                          ₹{amountToPay.toLocaleString("en-IN")}
-                        </p>
-                        <p className="text-[11px] text-[#64748B] mt-0.5">
-                          Remaining ₹{balanceDue.toLocaleString("en-IN")} payable in monthly installments.
+                        <p className="text-[11px] text-[#64748B] mt-1.5">
+                          Reserve your seat now (₹0 online). Pay fee directly at your study centre desk. Registration ID activated upon payment.
                         </p>
                       </button>
                     </div>
                   </div>
 
-                  {/* Partial Amount Input if partial is chosen */}
-                  {paymentType === "partial" && (
-                    <div className="p-4 bg-[#F8FAFC] rounded-xl border border-[#E2E8F0] space-y-2">
-                      <label className="text-xs font-bold text-[#1E293B]">
-                        Custom Initial Payment (Minimum ₹1,000)
-                      </label>
-                      <div className="relative">
-                        <span className="absolute left-3 top-2.5 text-xs font-bold text-[#64748B]">
-                          ₹
-                        </span>
-                        <input
-                          type="number"
-                          min={1000}
-                          max={finalFee}
-                          step={500}
-                          value={partialAmount}
-                          onChange={(e) => setPartialAmount(Number(e.target.value))}
-                          className="w-full pl-8 pr-3 py-2 text-xs font-bold bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#5B21F4]"
-                        />
+                  {/* Online Payment Options */}
+                  {paymentMethod === "online" && (
+                    <div className="space-y-4">
+                      {/* Payment Type Selection */}
+                      <div className="space-y-3">
+                        <label className="text-xs font-bold text-[#1E293B]">
+                          Choose Payment Option
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setPaymentType("full")}
+                            className={`p-4 rounded-xl border text-left transition-all ${
+                              paymentType === "full"
+                                ? "border-[#5B21F4] bg-[#F1EEFF] text-[#0F172A] ring-2 ring-[#5B21F4]/15"
+                                : "border-[#E2E8F0] hover:border-[#CBD5E1] bg-white text-[#475569]"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold">
+                                Full One-Time Fee
+                              </span>
+                              {paymentType === "full" && (
+                                <CheckCircle2 className="w-4 h-4 text-[#5B21F4]" />
+                              )}
+                            </div>
+                            <p className="text-base font-black text-[#0F172A] mt-1">
+                              ₹{finalFee.toLocaleString("en-IN")}
+                            </p>
+                            <p className="text-[11px] text-[#64748B] mt-0.5">
+                              Zero dues remaining. Instant full admission clearance.
+                            </p>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setPaymentType("partial")}
+                            className={`p-4 rounded-xl border text-left transition-all ${
+                              paymentType === "partial"
+                                ? "border-[#5B21F4] bg-[#F1EEFF] text-[#0F172A] ring-2 ring-[#5B21F4]/15"
+                                : "border-[#E2E8F0] hover:border-[#CBD5E1] bg-white text-[#475569]"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold">
+                                Admission Initial Deposit
+                              </span>
+                              {paymentType === "partial" && (
+                                <CheckCircle2 className="w-4 h-4 text-[#5B21F4]" />
+                              )}
+                            </div>
+                            <p className="text-base font-black text-[#0F172A] mt-1">
+                              ₹{amountToPay.toLocaleString("en-IN")}
+                            </p>
+                            <p className="text-[11px] text-[#64748B] mt-0.5">
+                              Remaining ₹{balanceDue.toLocaleString("en-IN")} payable in monthly installments.
+                            </p>
+                          </button>
+                        </div>
                       </div>
-                      <p className="text-[11px] text-[#64748B]">
-                        Balance due of ₹{balanceDue.toLocaleString("en-IN")} will be scheduled under your Student Portal fee ledger.
-                      </p>
+
+                      {/* Partial Amount Input if partial is chosen */}
+                      {paymentType === "partial" && (
+                        <div className="p-4 bg-[#F8FAFC] rounded-xl border border-[#E2E8F0] space-y-2">
+                          <label className="text-xs font-bold text-[#1E293B]">
+                            Custom Initial Payment (Minimum ₹1,000)
+                          </label>
+                          <div className="relative">
+                            <span className="absolute left-3 top-2.5 text-xs font-bold text-[#64748B]">
+                              ₹
+                            </span>
+                            <input
+                              type="number"
+                              min={1000}
+                              max={finalFee}
+                              step={500}
+                              value={partialAmount}
+                              onChange={(e) => setPartialAmount(Number(e.target.value))}
+                              className="w-full pl-8 pr-3 py-2 text-xs font-bold bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#5B21F4]"
+                            />
+                          </div>
+                          <p className="text-[11px] text-[#64748B]">
+                            Balance due of ₹{balanceDue.toLocaleString("en-IN")} will be scheduled under your Student Portal fee ledger.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Payment Gateway Callout */}
+                      <div className="p-4 bg-[#F1EEFF] rounded-xl border border-[#DDD6FE] flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <CreditCard className="w-6 h-6 text-[#5B21F4]" />
+                          <div>
+                            <p className="text-xs font-bold text-[#0F172A]">
+                              Razorpay Payment Gateway
+                            </p>
+                            <p className="text-[11px] text-[#64748B]">
+                              Supports UPI (GPay, PhonePe, Paytm), NetBanking, Credit/Debit Cards.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[10px] font-bold uppercase text-[#5B21F4]">
+                            Amount to Pay
+                          </span>
+                          <p className="text-lg font-black text-[#5B21F4]">
+                            ₹{amountToPay.toLocaleString("en-IN")}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Centre Payment Notice & Desk Info */}
+                  {paymentMethod === "center" && (
+                    <div className="space-y-4">
+                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+                        <div className="flex items-center gap-2 text-amber-900 font-bold text-xs">
+                          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                          <span>Pay at Study Centre Notice</span>
+                        </div>
+                        <p className="text-[11px] text-amber-800 leading-relaxed">
+                          Your admission profile and <strong>Student ID</strong> will be generated immediately upon completing this step. However, your official <strong>Registration Number (BISR ID)</strong> will NOT be generated now. It will only be activated once you deposit your course fee at your study centre desk.
+                        </p>
+                      </div>
+
+                      {/* Study Centre Desk Address Card */}
+                      {selectedCentre && (
+                        <div className="p-4 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl space-y-2">
+                          <div className="flex items-center justify-between text-xs font-bold text-[#0F172A]">
+                            <span className="flex items-center gap-1.5">
+                              <Building2 className="w-4 h-4 text-[#5B21F4]" />
+                              Deposit Centre: {selectedCentre.franchisee_name}
+                            </span>
+                            <span className="font-mono text-[10px] text-[#64748B] bg-white px-2 py-0.5 rounded border border-[#E2E8F0]">
+                              {selectedCentre.franchisee_code}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-[#64748B]">
+                            {selectedCentre.franchisee_adrs}, {selectedCentre.franchisee_city}, {selectedCentre.franchisee_state}
+                          </p>
+                          {selectedCentre.franchisee_mobile && (
+                            <p className="text-[11px] text-[#64748B] flex items-center gap-1.5">
+                              <Phone className="w-3.5 h-3.5 text-[#5B21F4]" />
+                              <span>Centre Contact: {selectedCentre.franchisee_mobile}</span>
+                            </p>
+                          )}
+                          <div className="pt-2 border-t border-[#E2E8F0] flex items-center justify-between text-xs">
+                            <span className="font-semibold text-[#475569]">
+                              Fee Payable at Centre:
+                            </span>
+                            <span className="font-black text-[#5B21F4] text-sm">
+                              ₹{finalFee.toLocaleString("en-IN")}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1785,29 +2379,6 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                     </div>
                   )}
 
-                  {/* Payment Gateway Callout */}
-                  <div className="p-4 bg-[#F1EEFF] rounded-xl border border-[#DDD6FE] flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <CreditCard className="w-6 h-6 text-[#5B21F4]" />
-                      <div>
-                        <p className="text-xs font-bold text-[#0F172A]">
-                          Razorpay Payment Gateway
-                        </p>
-                        <p className="text-[11px] text-[#64748B]">
-                          Supports UPI (GPay, PhonePe, Paytm), NetBanking, Credit/Debit Cards.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-[10px] font-bold uppercase text-[#5B21F4]">
-                        Amount to Pay
-                      </span>
-                      <p className="text-lg font-black text-[#5B21F4]">
-                        ₹{amountToPay.toLocaleString("en-IN")}
-                      </p>
-                    </div>
-                  </div>
-
                   {/* Step Actions */}
                   <div className="pt-2 flex items-center justify-between">
                     <Button
@@ -1819,23 +2390,43 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                       <ArrowLeft className="w-4 h-4 mr-1.5" />
                       Back
                     </Button>
-                    <Button
-                      disabled={isProcessingPayment}
-                      onClick={handleInitiatePayment}
-                      className="bg-[#5B21F4] hover:bg-[#4a17cc] text-white px-8 py-3 rounded-xl text-xs font-black shadow-md shadow-[#5B21F4]/20 flex items-center gap-2 cursor-pointer"
-                    >
-                      {isProcessingPayment ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Processing Admission...</span>
-                        </>
-                      ) : (
-                        <>
-                          <ShieldCheck className="w-4 h-4 text-emerald-300" />
-                          <span>Pay ₹{amountToPay.toLocaleString("en-IN")} &amp; Confirm</span>
-                        </>
-                      )}
-                    </Button>
+                    {paymentMethod === "online" ? (
+                      <Button
+                        disabled={isProcessingPayment}
+                        onClick={handleInitiatePayment}
+                        className="bg-[#5B21F4] hover:bg-[#4a17cc] text-white px-8 py-3 rounded-xl text-xs font-black shadow-md shadow-[#5B21F4]/20 flex items-center gap-2 cursor-pointer"
+                      >
+                        {isProcessingPayment ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Processing Admission...</span>
+                          </>
+                        ) : (
+                          <>
+                            <ShieldCheck className="w-4 h-4 text-emerald-300" />
+                            <span>Pay ₹{amountToPay.toLocaleString("en-IN")} &amp; Confirm</span>
+                          </>
+                        )}
+                      </Button>
+                    ) : (
+                      <Button
+                        disabled={isProcessingPayment}
+                        onClick={handleCenterPaymentEnrollment}
+                        className="bg-[#5B21F4] hover:bg-[#4a17cc] text-white px-8 py-3 rounded-xl text-xs font-black shadow-md shadow-[#5B21F4]/20 flex items-center gap-2 cursor-pointer"
+                      >
+                        {isProcessingPayment ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Registering Admission...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Building2 className="w-4 h-4 text-amber-300" />
+                            <span>Confirm &amp; Pay at Centre</span>
+                          </>
+                        )}
+                      </Button>
+                    )}
                   </div>
                 </motion.div>
               )}
@@ -1850,29 +2441,59 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                   animate={{ opacity: 1, scale: 1 }}
                   className="bg-white border border-[#E2E8F0] rounded-2xl p-6 sm:p-8 shadow-sm space-y-6 text-center"
                 >
-                  <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto shadow-inner">
-                    <CheckCircle2 className="w-8 h-8" />
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto shadow-inner ${
+                    enrollmentSuccess.payment_mode === "center"
+                      ? "bg-amber-100 text-amber-600"
+                      : "bg-emerald-100 text-emerald-600"
+                  }`}>
+                    {enrollmentSuccess.payment_mode === "center" ? (
+                      <Building2 className="w-8 h-8" />
+                    ) : (
+                      <CheckCircle2 className="w-8 h-8" />
+                    )}
                   </div>
 
                   <div>
-                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full uppercase tracking-wider">
-                      {isExistingStudent ? "Course Enrolled" : "Admission Confirmed"}
+                    <span className={`text-[11px] font-bold px-3 py-1 rounded-full uppercase tracking-wider ${
+                      enrollmentSuccess.payment_mode === "center"
+                        ? "text-amber-800 bg-amber-50 border border-amber-200"
+                        : "text-emerald-700 bg-emerald-50"
+                    }`}>
+                      {enrollmentSuccess.payment_mode === "center"
+                        ? "Admission Registered • Centre Payment"
+                        : isExistingStudent
+                        ? "Course Enrolled"
+                        : "Admission Confirmed"}
                     </span>
                     <h2 className="text-xl sm:text-2xl font-black text-[#0F172A] mt-2">
                       Congratulations, {name || currentUser?.name}!
                     </h2>
                     <p className="text-xs text-[#64748B] mt-1 max-w-md mx-auto">
-                      Your enrollment in <strong className="text-[#0F172A]">{enrollmentSuccess.course_name}</strong> is verified and officially recorded.
+                      {enrollmentSuccess.payment_mode === "center" ? (
+                        <>
+                          Your admission in <strong className="text-[#0F172A]">{enrollmentSuccess.course_name}</strong> has been registered. Please visit your study centre to complete fee payment and activate your official Registration ID.
+                        </>
+                      ) : (
+                        <>
+                          Your enrollment in <strong className="text-[#0F172A]">{enrollmentSuccess.course_name}</strong> is verified and officially recorded.
+                        </>
+                      )}
                     </p>
                   </div>
 
-                  {/* Registration Badge */}
+                  {/* Registration Badge & Details */}
                   <div className="max-w-md mx-auto bg-[#F8FAFC] border border-[#CBD5E1] p-4 rounded-xl text-left space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-[#64748B] font-semibold">Registration Number:</span>
-                      <span className="font-mono font-black text-blue-900 text-sm">
-                        {enrollmentSuccess.registration_number || existingRegNo}
-                      </span>
+                      {enrollmentSuccess.registration_number ? (
+                        <span className="font-mono font-black text-blue-900 text-sm">
+                          {enrollmentSuccess.registration_number}
+                        </span>
+                      ) : (
+                        <span className="text-amber-700 font-bold bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded text-[11px]">
+                          Pending (Pay at Study Centre)
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-[#64748B] font-semibold">Student ID:</span>
@@ -1882,19 +2503,35 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                     </div>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-[#64748B] font-semibold">Amount Paid:</span>
-                      <span className="font-bold text-emerald-700">
-                        ₹{Number(enrollmentSuccess.amount_paid).toLocaleString("en-IN")}
+                      <span className={`font-bold ${enrollmentSuccess.payment_mode === "center" ? "text-amber-700" : "text-emerald-700"}`}>
+                        {enrollmentSuccess.payment_mode === "center"
+                          ? "₹0 (Pending at Centre)"
+                          : `₹${Number(enrollmentSuccess.amount_paid).toLocaleString("en-IN")}`}
                       </span>
                     </div>
+                    {enrollmentSuccess.payment_mode === "center" && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-[#64748B] font-semibold">Fee Payable at Desk:</span>
+                        <span className="font-black text-[#5B21F4]">
+                          ₹{(enrollmentSuccess.center_deposit_amount || finalFee).toLocaleString("en-IN")}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-[#64748B] font-semibold">Study Centre:</span>
                       <span className="font-medium text-[#0F172A] text-right truncate max-w-[200px]">
                         {enrollmentSuccess.franchisee_name}
                       </span>
                     </div>
+                    {enrollmentSuccess.franchisee_adrs && (
+                      <div className="text-[11px] text-[#64748B] pt-1 border-t border-[#E2E8F0]">
+                        <span className="font-semibold text-[#475569]">Centre Address: </span>
+                        <span>{enrollmentSuccess.franchisee_adrs}</span>
+                      </div>
+                    )}
                     {enrollmentSuccess.payment_reference && (
                       <div className="flex items-center justify-between text-[11px] pt-1 border-t border-[#E2E8F0]">
-                        <span className="text-[#94A3B8]">Razorpay Ref:</span>
+                        <span className="text-[#94A3B8]">Payment Ref:</span>
                         <span className="font-mono text-[#64748B]">
                           {enrollmentSuccess.payment_reference}
                         </span>
@@ -1980,6 +2617,43 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                 </div>
               )}
 
+              {/* ── Offline Course Coupon Offers & Apply Section ────────── */}
+              <div className="border-t border-[#F1F5F9] pt-3">
+                <CouponOfferCards
+                  courseType="offline"
+                  courseId={selectedCourse ? Number(selectedCourse.course_id) : undefined}
+                  courseFee={courseFee}
+                  currentUser={
+                    currentUser
+                      ? {
+                          user_id: currentUser.user_id,
+                          email: email || currentUser.email,
+                          mobile: mobile || currentUser.mobile,
+                          role: currentUser.role,
+                        }
+                      : null
+                  }
+                  appliedCoupon={appliedCoupon}
+                  onApplySuccess={(verified) => {
+                    setAppliedCoupon({
+                      ...verified,
+                      course_id: selectedCourse ? Number(selectedCourse.course_id) : undefined,
+                    });
+                    setDiscount(Number(verified.discount_amount) || 0);
+                    setCouponSuccess(
+                      `Coupon "${verified.coupon_code}" applied! You saved ₹${Number(
+                        verified.discount_amount
+                      ).toLocaleString("en-IN")}.`
+                    );
+                    setCouponError(null);
+                    fireCouponConfetti();
+                  }}
+                  onRemoveCoupon={() => {
+                    handleRemoveCoupon();
+                  }}
+                />
+              </div>
+
               {/* Fee Breakdown */}
               <div className="border-t border-[#F1F5F9] pt-3 space-y-2 text-xs">
                 <div className="flex justify-between text-[#64748B]">
@@ -1989,12 +2663,22 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                   </span>
                 </div>
 
-                {cleanDiscount > 0 && (
+                {appliedCoupon && cleanDiscount > 0 ? (
+                  <div className="flex justify-between items-center text-emerald-700 bg-emerald-50/80 border border-emerald-200/80 px-2.5 py-1.5 rounded-xl font-semibold">
+                    <span className="flex items-center gap-1.5 text-xs">
+                      <Tag className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>Coupon ({appliedCoupon.coupon_code}):</span>
+                    </span>
+                    <span className="font-black text-emerald-800 text-xs">
+                      -₹{cleanDiscount.toLocaleString("en-IN")}
+                    </span>
+                  </div>
+                ) : cleanDiscount > 0 ? (
                   <div className="flex justify-between text-emerald-600 font-semibold">
                     <span>Approved Scholarship:</span>
                     <span>-₹{cleanDiscount.toLocaleString("en-IN")}</span>
                   </div>
-                )}
+                ) : null}
 
                 <div className="flex justify-between text-[#0F172A] font-bold pt-1 border-t border-[#F1F5F9]">
                   <span>Total Net Payable:</span>
@@ -2006,15 +2690,22 @@ export function CourseEnrollmentView({ portalType }: CourseEnrollmentViewProps) 
                 <div className="p-3 bg-[#F8FAFC] rounded-xl border border-[#E2E8F0] space-y-1 mt-2">
                   <div className="flex justify-between text-xs font-bold text-[#0F172A]">
                     <span>Paying Today:</span>
-                    <span className="text-emerald-700">
-                      ₹{amountToPay.toLocaleString("en-IN")}
+                    <span className={paymentMethod === "center" ? "text-amber-700 font-bold" : "text-emerald-700 font-bold"}>
+                      {paymentMethod === "center" ? "₹0 (Pay at Centre)" : `₹${amountToPay.toLocaleString("en-IN")}`}
                     </span>
                   </div>
-                  {balanceDue > 0 && (
-                    <div className="flex justify-between text-[11px] text-[#64748B]">
-                      <span>Remaining Balance:</span>
-                      <span>₹{balanceDue.toLocaleString("en-IN")}</span>
+                  {paymentMethod === "center" ? (
+                    <div className="flex justify-between text-[11px] text-[#0F172A] font-semibold pt-1 border-t border-[#E2E8F0]">
+                      <span>Fee Payable at Centre:</span>
+                      <span className="text-[#5B21F4] font-bold">₹{finalFee.toLocaleString("en-IN")}</span>
                     </div>
+                  ) : (
+                    balanceDue > 0 && (
+                      <div className="flex justify-between text-[11px] text-[#64748B]">
+                        <span>Remaining Balance:</span>
+                        <span>₹{balanceDue.toLocaleString("en-IN")}</span>
+                      </div>
+                    )
                   )}
                 </div>
               </div>

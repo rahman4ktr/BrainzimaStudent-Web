@@ -13,8 +13,9 @@ import { normalizeEmail, verifySubmittedOtp } from "@/lib/otpStore";
 import { getClientIp, getCurrentSqlDateTime } from "@/lib/utils";
 
 const PHP_API =
+  process.env.API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "https://try.ajitdev.com/brainzima/student/api";
+  "https://api.brainzima.com/student/api";
 
 export async function POST(req: NextRequest) {
   try {

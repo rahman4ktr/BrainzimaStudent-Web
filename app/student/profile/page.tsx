@@ -45,7 +45,7 @@ const fadeUp = (delay = 0) => ({
 });
 
 export default function StudentProfilePage() {
-  const { user_id, student_id, refreshStudent, isLoading: isStudentLoading } = useStudent();
+  const { user_id, student_id, registration_number, refreshStudent, isLoading: isStudentLoading } = useStudent();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -267,7 +267,8 @@ export default function StudentProfilePage() {
 
   const avatarUrl = getFileUrl(user?.user_image || (student as any)?.user_image);
   const initials = getInitials(form.name || student?.st_name || user?.name);
-  const registrationNo = student?.st_regno || user?.registration_number || (student_id ? `BISR${String(student_id).padStart(4, "0")}` : "—");
+  const isPendingCenter = !student?.st_regno && !user?.registration_number && !registration_number;
+  const registrationNo = student?.st_regno || user?.registration_number || registration_number || (isPendingCenter ? "Pending (Pay at Study Centre)" : "—");
 
   return (
     <div className="p-4 md:p-6 lg:p-8 space-y-6 max-w-4xl mx-auto">
@@ -365,26 +366,19 @@ export default function StudentProfilePage() {
                   <h2 className="text-xl font-black text-[#111827]">
                     {form.name || "Enrolled Student"}
                   </h2>
-                  <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-[#F1EEFF] text-[#5B21F4]">
+                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
+                    isPendingCenter
+                      ? "bg-amber-50 text-amber-800 border border-amber-200"
+                      : "bg-[#F1EEFF] text-[#5B21F4] font-mono"
+                  }`}>
                     {registrationNo}
                   </span>
                 </div>
                 <p className="text-xs text-[#64748B] mt-0.5">
-                  Student ID #{student_id || "—"} · User Account #{user_id || "—"}
+                  Student ID #{student_id || "—"} 
                 </p>
               </div>
 
-              {avatarUrl && (
-                <button
-                  type="button"
-                  onClick={handleRemovePhoto}
-                  disabled={isUploadingImage}
-                  className="inline-flex items-center gap-1.5 text-xs font-bold text-red-600 hover:text-red-700 cursor-pointer self-start"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove Photo</span>
-                </button>
-              )}
             </div>
           </div>
         </div>
@@ -434,7 +428,11 @@ export default function StudentProfilePage() {
                 type="text"
                 value={registrationNo}
                 disabled
-                className="w-full h-10 px-3 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] text-[#5B21F4] font-mono font-bold"
+                className={`w-full h-10 px-3 rounded-xl border border-[#E2E8F0] font-bold ${
+                  isPendingCenter
+                    ? "bg-amber-50/50 text-amber-800 border-amber-200"
+                    : "bg-[#F8FAFC] text-[#5B21F4] font-mono"
+                }`}
               />
             </div>
 

@@ -51,7 +51,11 @@ export default function BottomNav({
         {bottomNavItems.map((item) => {
           const isActive =
             !isSidebarOpen &&
-            (pathname === item.href || pathname.startsWith(item.href + "/"));
+            (pathname === item.href ||
+              pathname.startsWith(item.href + "/") ||
+              (item.href === "/student/courses" &&
+                (pathname.startsWith("/student/online-courses") ||
+                  pathname.startsWith("/student/offline-courses"))));
           return (
             <Link
               key={item.href}

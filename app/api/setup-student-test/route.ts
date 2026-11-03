@@ -9,8 +9,9 @@ import path from "path";
 
   try {
     const PHP_API =
-      process.env.NEXT_PUBLIC_API_URL ||
-      "https://try.ajitdev.com/brainzima/student/api";
+      process.env.API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+      "https://api.brainzima.com/student/api";
 
     results.PHP_API = PHP_API;
 

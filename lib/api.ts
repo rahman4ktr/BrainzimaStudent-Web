@@ -1,6 +1,6 @@
 // lib/api.ts
 // Clean API client matching the Brainzima PHP REST API (README spec)
-// Production: https://try.ajitdev.com/brainzima/student/api
+// Production: https://api.brainzima.com/student/api
 
 import { getCurrentSqlDateTime } from "./utils";
 import { getBackendApiUrl } from "./apiConfig";
@@ -24,6 +24,18 @@ export interface LoginData {
   user_verified?: number | boolean;
   last_login_at?: string | null;
   last_login_ip?: string | null;
+  dob?: string | null;
+  st_dob?: string | null;
+  docs_st_image?: string | null;
+  docs_st_aadhaar_front?: string | null;
+  docs_st_aadhaar_back?: string | null;
+  docs_st_qualification?: string | null;
+  documents?: {
+    docs_st_image?: string | null;
+    docs_st_aadhaar_front?: string | null;
+    docs_st_aadhaar_back?: string | null;
+    docs_st_qualification?: string | null;
+  } | null;
 }
 
 export { getFileUrl, getInitials } from "./session";
@@ -68,10 +80,15 @@ export async function apiRequest<T = unknown>(
 ): Promise<ApiResponse<T>> {
   const { method = "GET", body, userId, userRole, studentId } = options;
 
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     Accept: "application/json",
   };
+
+  if (!isFormData) {
+    headers["Content-Type"] = "application/json";
+  }
 
   if (userId) headers["X-User-Id"] = String(userId);
   if (userRole) headers["X-User-Role"] = userRole;
@@ -80,6 +97,7 @@ export async function apiRequest<T = unknown>(
   try {
     const NEXT_LOCAL_API_PREFIXES = [
       "/api/auth",
+      "/auth",
       "/api/user",
       "/api/upload",
       "/api/course",
@@ -91,6 +109,14 @@ export async function apiRequest<T = unknown>(
       "/api/fee",
       "/api/notes",
       "/api/attendance",
+      "/api/onlinecoures",
+      "/api/coupon-online",
+      "/api/coupon",
+      "/api/online-quiz-questions",
+      "/api/online-results",
+      "/api/online-course-feedback",
+      "/api/ebooks",
+      "/api/ebook-library",
     ];
 
     let url: string;
@@ -107,16 +133,26 @@ export async function apiRequest<T = unknown>(
     const res = await fetch(url, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: isFormData ? (body as FormData) : (body ? JSON.stringify(body) : undefined),
     });
 
-    const json = await res.json();
+    let json: any = null;
+    const text = await res.text();
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = {
+        success: false,
+        message: text && text.length < 200 ? text : `Server returned HTTP ${res.status}`,
+      };
+    }
+
     // Attach HTTP status so callers can detect 409 Conflict, 403 Unverified, 429 Rate Limit, etc.
     return { ...(json as ApiResponse<T>), _status: res.status };
-  } catch {
+  } catch (err: any) {
     return {
       success: false,
-      message: "Network error. Please check your connection and try again.",
+      message: err?.message || "Network error. Please check your connection and try again.",
       _status: 0,
     };
   }
@@ -193,7 +229,7 @@ export async function loginUser(
   });
 }
 
-/** POST /api/upload — Upload user / student profile photo */
+/** POST /api/upload — Upload user / student profile photo directly to PHP backend */
 export async function uploadUserImage(
   file: File,
   userId?: number,
@@ -211,15 +247,18 @@ export async function uploadUserImage(
   message?: string;
 }> {
   const formData = new FormData();
+  formData.append("user_image", file);
   formData.append("file", file);
   if (userId) {
     formData.append("userId", String(userId));
+    formData.append("user_id", String(userId));
   }
   if (currentImage) {
     formData.append("current_image", currentImage);
   }
   if (role) {
     formData.append("role", role);
+    formData.append("user_role", role);
   }
   if (isStudent !== undefined) {
     formData.append("is_student", String(isStudent));
@@ -228,6 +267,11 @@ export async function uploadUserImage(
   try {
     const res = await fetch("/api/upload", {
       method: "POST",
+      headers: {
+        Accept: "application/json",
+        ...(userId ? { "X-User-Id": String(userId) } : {}),
+        ...(role ? { "X-User-Role": role } : {}),
+      },
       body: formData,
     });
     return await res.json();
@@ -245,7 +289,7 @@ export async function registerUser(
   email: string,
   mobile: string,
   password: string,
-  user_image?: string
+  user_image?: string | File | null
 ): Promise<ApiResponse<RegisterResponseData>> {
   const normalizedEmail = email.trim().toLowerCase();
   let ip = "127.0.0.1";
@@ -255,6 +299,27 @@ export async function registerUser(
     /* fallback */
   }
 
+  if (
+    user_image &&
+    typeof user_image === "object" &&
+    typeof (user_image as any).arrayBuffer === "function"
+  ) {
+    const formData = new FormData();
+    formData.append("name", name.trim());
+    formData.append("email", normalizedEmail);
+    formData.append("mobile", mobile.trim());
+    formData.append("password", password);
+    formData.append("user_image", user_image as File);
+    formData.append("ip", ip);
+    formData.append("last_login_ip", ip);
+    formData.append("last_login_at", getCurrentSqlDateTime());
+
+    return apiRequest<RegisterResponseData>("/api/auth/register", {
+      method: "POST",
+      body: formData,
+    });
+  }
+
   return apiRequest<RegisterResponseData>("/api/auth/register", {
     method: "POST",
     body: {
@@ -262,7 +327,7 @@ export async function registerUser(
       email: normalizedEmail,
       mobile: mobile.trim(),
       password,
-      user_image,
+      user_image: typeof user_image === "string" ? user_image : undefined,
       ip,
       last_login_ip: ip,
       last_login_at: getCurrentSqlDateTime(),
@@ -308,24 +373,47 @@ export async function resendOtp(
   });
 }
 
-/** POST /auth/forgot-password — Initiate password reset */
+/** POST /api/auth/forgot-password — Initiate password reset (requests 6-digit OTP) */
 export async function forgotPassword(
   email: string
 ): Promise<ApiResponse<null>> {
-  return apiRequest("/auth/forgot-password", {
+  const normalizedEmail = email.trim().toLowerCase();
+  return apiRequest<null>("/api/auth/forgot-password", {
     method: "POST",
-    body: { email: email.trim().toLowerCase() },
+    body: { email: normalizedEmail },
   });
 }
 
-/** POST /auth/reset-password — Set new bcrypt password */
+/** POST /api/auth/verify-reset-otp — Verify 6-digit reset OTP */
+export async function verifyResetOtp(
+  email: string,
+  otp: string
+): Promise<ApiResponse<null>> {
+  const normalizedEmail = email.trim().toLowerCase();
+  return apiRequest<null>(
+    "/api/auth/verify-reset-otp",
+    {
+      method: "POST",
+      body: {
+        email: normalizedEmail,
+        otp: otp.trim(),
+      },
+    }
+  );
+}
+
+/** POST /api/auth/reset-password — Set new password */
 export async function resetPassword(
   email: string,
-  new_password: string
+  newPassword: string
 ): Promise<ApiResponse<null>> {
-  return apiRequest("/auth/reset-password", {
+  const normalizedEmail = email.trim().toLowerCase();
+  return apiRequest<null>("/api/auth/reset-password", {
     method: "POST",
-    body: { email: email.trim().toLowerCase(), new_password },
+    body: {
+      email: normalizedEmail,
+      new_password: newPassword,
+    },
   });
 }
 
@@ -339,17 +427,60 @@ export async function getMyProfile(
   return apiRequest<UserProfile>("/api/user/me", { userId, userRole });
 }
 
-/** PUT /api/user/profile — Update name / mobile / user_image */
+/** PATCH /api/user/profile — Update name / mobile / user_image (supports File, FormData, or JSON) */
 export async function updateUserProfile(
   userId: number,
   userRole: "student" | "user",
-  data: { name?: string; mobile?: string; user_image?: string | null }
+  data:
+    | FormData
+    | {
+        name?: string;
+        mobile?: string;
+        user_image?: string | File | null;
+        [key: string]: any;
+      }
 ): Promise<ApiResponse<UserProfile>> {
+  if (data instanceof FormData) {
+    if (!data.has("_method")) data.append("_method", "PATCH");
+    return apiRequest<UserProfile>("/api/user/profile", {
+      method: "PATCH",
+      userId,
+      userRole,
+      body: data,
+    });
+  }
+
+  const obj = data as {
+    name?: string;
+    mobile?: string;
+    user_image?: string | File | null;
+    [key: string]: any;
+  };
+
+  // If user_image is a File, package as FormData for multipart upload
+  if (
+    obj?.user_image &&
+    typeof obj.user_image === "object" &&
+    typeof (obj.user_image as any).arrayBuffer === "function"
+  ) {
+    const formData = new FormData();
+    if (obj.name) formData.append("name", obj.name);
+    if (obj.mobile) formData.append("mobile", obj.mobile);
+    formData.append("user_image", obj.user_image as File);
+    formData.append("_method", "PATCH");
+    return apiRequest<UserProfile>("/api/user/profile", {
+      method: "PATCH",
+      userId,
+      userRole,
+      body: formData,
+    });
+  }
+
   return apiRequest<UserProfile>("/api/user/profile", {
-    method: "PUT",
+    method: "PATCH",
     userId,
     userRole,
-    body: data,
+    body: obj,
   });
 }
 
@@ -390,6 +521,7 @@ export interface Course {
   course_id: number;
   course_code: string;
   course_name: string;
+  course_img_path?: string | null;
   course_description?: string;
   course_modules?: string;
   course_duration: string;
@@ -475,6 +607,7 @@ export interface StudentProfile {
   user_image?: string | null;
   st_father_name?: string;
   st_dob?: string;
+  dob?: string | null;
   st_gender?: string;
   st_address?: string;
   st_city?: string;
@@ -483,6 +616,20 @@ export interface StudentProfile {
   st_qualification?: string;
   centre_name?: string;
   centre_code?: string;
+  docs_st_image?: string | null;
+  docs_st_aadhaar_front?: string | null;
+  docs_st_aadhaar_back?: string | null;
+  docs_st_qualification?: string | null;
+  documents?: {
+    docs_st_image?: string | null;
+    docs_st_aadhaar_front?: string | null;
+    docs_st_aadhaar_back?: string | null;
+    docs_st_qualification?: string | null;
+  } | null;
+  offline_courses?: EnrollmentItem[];
+  online_courses?: OnlineEnrolledCourse[];
+  enrolled_courses?: any[];
+  courses?: any[];
 }
 
 /** GET /api/student/me — Get authenticated student's full profile */
@@ -530,6 +677,7 @@ export interface EnrollmentItem {
   stc_course_id?: number;
   course_name?: string;
   course_code?: string;
+  course_format?: "offline" | "online" | string;
   batch_id?: number;
   batch_name?: string;
   batch_title?: string;
@@ -562,6 +710,8 @@ export interface AdmissionFormData {
   st_pincode?: string;
   st_qualification?: string;
   st_referredby?: string;
+  referred_by?: string;
+  referredby?: string;
 }
 
 export interface DocumentPathStrings {
@@ -576,34 +726,48 @@ export interface FinalizeEnrollmentPayload {
   centre_id: number;
   batch_id?: number | null;
   discount?: number;
-  razorpay_payment_id: string;
-  razorpay_order_id: string;
-  razorpay_signature: string;
+  payment_method?: "razorpay" | "center";
+  payment_mode?: string;
+  initial_payment?: number;
+  center_deposit_amount?: number;
+  razorpay_payment_id?: string;
+  razorpay_order_id?: string;
+  razorpay_signature?: string;
   admission?: AdmissionFormData;
   documents?: DocumentPathStrings;
   name?: string;
   email?: string;
   mobile?: string;
+  user_image?: string;
+  student_id?: number;
+  st_referredby?: string;
+  referred_by?: string;
+  referredby?: string;
+  coupon_code?: string;
 }
 
 export interface EnrollmentResponseData {
   stc_id: number;
   student_id: number;
-  registration_number: string;
+  registration_number: string | null;
   course_id: number;
   centre_id?: number;
   amount_paid?: number;
+  center_deposit_amount?: number;
+  center_balance_due?: number;
   total_fee?: number;
   discount?: number;
   initial_payment?: number;
   dues?: number;
   payment_mode?: string;
+  payment_status?: string;
   payment_reference?: string;
   role: "student";
   is_student: true;
   user_id: number;
   email_sent?: boolean;
   email_recipient?: string;
+  user_image?: string | null;
 }
 
 /** POST /api/enrollment — Complete verified enrollment after Razorpay payment */
@@ -696,9 +860,9 @@ export async function updateEnrollment(
 export interface FeeTransactionItem {
   transaction_id: number;
   enrollment_id: number;
-  student_id: number;
-  registration_no: string;
-  student_name: string;
+  student_id?: number;
+  registration_no?: string;
+  student_name?: string;
   course_name: string;
   amount: number;
   mode: string;
@@ -707,6 +871,9 @@ export interface FeeTransactionItem {
   date: string;
   tr_id?: number;
   tr_stc_id?: number;
+  stc_id?: number;
+  tr_stco_id?: number | null;
+  tr_course_type?: string;
   tr_amount?: number;
   tr_mode?: string;
   tr_payref?: string;
@@ -723,7 +890,33 @@ export interface FeeTransactionItem {
     stc_dues?: number;
     total_successful_paid?: number;
     remaining_dues?: number;
+    coupon_code?: string | null;
+    course_fee?: number;
+    initial_payment?: number;
   };
+  total_fee?: number;
+  course_fee?: number;
+  discount?: number;
+  discount_amount?: number;
+  coupon_code?: string | null;
+  coupon_discount?: number;
+  amount_paid?: number;
+  initial_payment?: number;
+  dues?: number;
+  remaining_dues?: number;
+  stco_id?: number | null;
+  razorpay_payment_id?: string;
+  razorpay_order_id?: string | null;
+  is_online?: boolean;
+  course_format?: string;
+  course_id?: number | string;
+  course_code?: string;
+  payref?: string;
+  status?: string;
+  registration_number?: string;
+  type?: string;
+  batch_name?: string;
+  center_name?: string;
 }
 
 export interface FeeTransactionResponse {
@@ -864,7 +1057,45 @@ export async function saveStudentDocuments(
   });
 }
 
-/** Upload student document file to /api/upload */
+/**
+ * Upload student documents directly via multipart/form-data.
+ * Adheres to Section 10.2 of Brainzima REST API specification.
+ */
+export async function uploadStudentDocuments(
+  studentId: number,
+  userId: number,
+  files: {
+    docs_st_image?: File;
+    docs_st_aadhaar_front?: File;
+    docs_st_aadhaar_back?: File;
+    docs_st_qualification?: File;
+  }
+): Promise<ApiResponse<StudentDocumentsPaths>> {
+  const formData = new FormData();
+  if (files.docs_st_image) formData.append("docs_st_image", files.docs_st_image);
+  if (files.docs_st_aadhaar_front) formData.append("docs_st_aadhaar_front", files.docs_st_aadhaar_front);
+  if (files.docs_st_aadhaar_back) formData.append("docs_st_aadhaar_back", files.docs_st_aadhaar_back);
+  if (files.docs_st_qualification) formData.append("docs_st_qualification", files.docs_st_qualification);
+
+  try {
+    const res = await fetch(`/api/document/student/${studentId}`, {
+      method: "POST",
+      headers: {
+        "X-User-Id": String(userId),
+        "X-User-Role": "student",
+      },
+      body: formData,
+    });
+    return await res.json();
+  } catch {
+    return {
+      success: false,
+      message: "Failed to upload student documents.",
+    };
+  }
+}
+
+/** Upload student document file to PHP backend via /api/upload */
 export async function uploadStudentDocumentFile(
   file: File,
   docType: string,
@@ -878,19 +1109,31 @@ export async function uploadStudentDocumentFile(
   db_path?: string;
   url?: string;
   filename?: string;
+  doc_type?: string;
+  user_image?: string;
 }> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("doc_type", docType);
+  formData.append(docType, file);
   formData.append("student_id", String(studentId));
   if (regno) formData.append("registration_number", regno);
   if (userId) formData.append("userId", String(userId));
 
-  const res = await fetch("/api/upload", {
-    method: "POST",
-    body: formData,
-  });
-  return await res.json();
+  try {
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        ...(userId ? { "X-User-Id": String(userId) } : {}),
+        "X-User-Role": "student",
+      },
+      body: formData,
+    });
+    return await res.json();
+  } catch {
+    return { success: false, message: "Failed to upload document file." };
+  }
 }
 
 // ─── Study Notes APIs ──────────────────────────────────────────────────────
@@ -1114,3 +1357,580 @@ export async function recordVerifiedFeePayment(
   });
 }
 
+// ─── Online Courses APIs ───────────────────────────────────────────────────
+
+export interface OnlineCourse {
+  course_id: number;
+  course_code: string;
+  course_name: string;
+  course_img_path?: string | null;
+  course_description?: string | null;
+  course_type: "basic" | "normal" | string;
+  course_validity?: string | null;
+  course_duration?: string | null;
+  course_fee: string | number;
+  course_status: "active" | "inactive" | string;
+  created_at?: string;
+  updated_at?: string;
+  syllabus?: OnlineSyllabusItem[];
+}
+
+export interface OnlineSyllabusItem {
+  syllabus_id: number;
+  course_id: number;
+  syllabus_title: string;
+  syllabus_topic: string;
+  syllabus_topic_url?: string | null;
+  topic_order: number;
+  syllabus_status: "active" | "inactive" | string;
+  created_at?: string;
+  updated_at?: string;
+  is_free?: boolean;
+  is_locked?: boolean;
+}
+
+export interface OnlineCourseAccessData {
+  course_id: number;
+  purchased: boolean;
+  authenticated?: boolean;
+  user_id?: number;
+}
+
+/** GET /api/onlinecoures — List all active online courses */
+export async function getOnlineCourses(params?: {
+  status?: string;
+  type?: string;
+}): Promise<ApiResponse<OnlineCourse[]>> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set("status", params.status);
+  if (params?.type) query.set("type", params.type);
+  const qs = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest<OnlineCourse[]>(`/api/onlinecoures${qs}`);
+}
+
+/** GET /api/onlinecoures/{id} — Single online course with syllabus */
+export async function getOnlineCourseById(
+  courseId: number
+): Promise<ApiResponse<OnlineCourse>> {
+  return apiRequest<OnlineCourse>(`/api/onlinecoures/${courseId}`);
+}
+
+/** GET /api/onlinecoures/{id}/syllabus — Syllabus for course ordered by topic_order ASC */
+export async function getOnlineCourseSyllabus(
+  courseId: number
+): Promise<ApiResponse<OnlineSyllabusItem[]>> {
+  return apiRequest<OnlineSyllabusItem[]>(`/api/onlinecoures/${courseId}/syllabus`);
+}
+
+/** GET /api/onlinecoures/{id}/access — Verify user's purchase access from backend */
+export async function checkOnlineCourseAccess(
+  courseId: number,
+  userId?: number,
+  userRole: "user" | "student" = "user"
+): Promise<ApiResponse<OnlineCourseAccessData>> {
+  return apiRequest<OnlineCourseAccessData>(`/api/onlinecoures/${courseId}/access`, {
+    userId,
+    userRole,
+  });
+}
+
+/** POST /api/razorpay/order — Create order for online course purchase */
+export async function createOnlineCourseOrder(
+  userId: number,
+  courseId: number,
+  amount: number,
+  discount: number = 0
+): Promise<ApiResponse<{
+  order_id: string;
+  amount: number;
+  currency: string;
+  key: string;
+}>> {
+  return apiRequest("/api/razorpay/order", {
+    method: "POST",
+    userId,
+    userRole: "user",
+    body: {
+      userId,
+      user_id: userId,
+      course_id: courseId,
+      amount,
+      discount,
+      is_online: true,
+      course_type: "online",
+    },
+  });
+}
+
+export interface OnlineCoursePurchaseResult {
+  purchased: boolean;
+  purchase_id?: string;
+  course_id: number;
+  amount_paid?: number;
+  total_fee?: number;
+  discount?: number;
+  coupon_code?: string | null;
+  user_id?: number;
+  student_id?: number | null;
+  registration_number?: string | null;
+  role?: string;
+  is_student?: boolean;
+  st_referredby?: string;
+  email_sent?: boolean;
+  email_recipient?: string | null;
+}
+
+/** POST /api/onlinecoures/{id}/purchase — Verify payment & confirm purchase on backend */
+export async function verifyOnlineCoursePurchase(
+  courseId: number,
+  userId: number,
+  data: {
+    razorpay_payment_id: string;
+    razorpay_order_id: string;
+    razorpay_signature: string;
+    user_email?: string;
+    user_name?: string;
+    coupon_code?: string;
+    discount?: number;
+    discount_amount?: number;
+    course_fee?: number;
+  },
+  userRole: "user" | "student" = "user"
+): Promise<ApiResponse<OnlineCoursePurchaseResult>> {
+  return apiRequest(`/api/onlinecoures/${courseId}/purchase`, {
+    method: "POST",
+    userId,
+    userRole,
+    body: {
+      ...data,
+      userId,
+      user_id: userId,
+      course_id: courseId,
+    },
+  });
+}
+
+export interface OnlineEnrolledCourse {
+  course_id: number;
+  course_code: string;
+  course_name: string;
+  course_img_path?: string | null;
+  course_description?: string;
+  course_type?: string;
+  course_duration?: string;
+  course_validity?: string;
+  course_fee: number | string;
+  total_fee?: number | string;
+  amount_paid: number | string;
+  discount?: number | string;
+  coupon_code?: string | null;
+  purchased_at?: string;
+  is_online?: boolean;
+  status?: string;
+  payment_status?: string;
+  enrollment_status?: string;
+  course_format?: "online";
+  stco_id?: number;
+  enrollment_id?: number;
+  student_id?: number | null;
+  registration_number?: string | null;
+  razorpay_payment_id?: string;
+  razorpay_order_id?: string;
+  created_at?: string;
+}
+
+/** GET /api/onlinecoures/enrolled — Retrieve all online courses purchased by the student */
+export async function getStudentOnlineCourses(
+  userId: number,
+  userRole: "user" | "student" = "student"
+): Promise<ApiResponse<OnlineEnrolledCourse[]>> {
+  return apiRequest<OnlineEnrolledCourse[]>("/api/onlinecoures/enrolled", {
+    method: "GET",
+    userId,
+    userRole,
+  });
+}
+
+// ─── Coupons API (Offline & Online) ────────────────────────────────────────
+
+export interface CouponItem {
+  coupon_id: number;
+  coupon_code: string;
+  coupon_for: "all" | "user_id" | string;
+  coupon_for_user_id?: number | null;
+  coupon_discount_type: "percentage" | "amount" | string;
+  coupon_discount: string | number;
+  coupon_for_course: "all" | "specific" | string;
+  coupon_for_course_id?: number | null;
+  coupon_for_mobile?: string | null;
+  coupon_for_email?: string | null;
+  coupon_validity: string;
+  coupon_expired: number | boolean;
+  coupon_limit?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  target_course_code?: string | null;
+  target_course_name?: string | null;
+  target_user_name?: string | null;
+  target_user_email?: string | null;
+}
+
+export interface ValidateCouponPayload {
+  coupon_code: string;
+  course_id: number;
+  course_fee?: number;
+  base_amount?: number;
+  user_id?: number;
+  email?: string;
+  mobile?: string;
+}
+
+export interface CouponValidationData {
+  coupon_id?: number;
+  coupon_code: string;
+  is_valid: boolean;
+  discount_type: "percentage" | "amount" | string;
+  discount_value: number;
+  base_amount: number;
+  discount_amount: number;
+  net_payable: number;
+}
+
+// ─── Offline Coupons (/api/coupon → bi_coupons) ───────────────────────────
+
+/** GET /api/coupon — List offline course coupons from bi_coupons */
+export async function getOfflineCoupons(
+  params?: {
+    status?: "active" | "expired" | string;
+    discount_type?: "percentage" | "amount" | string;
+    course_id?: number;
+    user_id?: number;
+    search?: string;
+  },
+  userId?: number,
+  userRole?: "user" | "student" | "admin"
+): Promise<ApiResponse<CouponItem[]>> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set("status", params.status);
+  if (params?.discount_type) query.set("discount_type", params.discount_type);
+  if (params?.course_id) query.set("course_id", String(params.course_id));
+  if (params?.user_id) query.set("user_id", String(params.user_id));
+  if (params?.search) query.set("search", params.search);
+  const qs = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest<CouponItem[]>(`/api/coupon${qs}`, { userId, userRole });
+}
+
+/** POST /api/coupon/validate — Validate offline coupon applicability & calculate server-side discount against bi_coupons */
+export async function validateOfflineCoupon(
+  payload: ValidateCouponPayload,
+  userId?: number,
+  userRole?: "user" | "student" | "admin"
+): Promise<ApiResponse<CouponValidationData>> {
+  return apiRequest<CouponValidationData>("/api/coupon/validate", {
+    method: "POST",
+    userId,
+    userRole,
+    body: payload,
+  });
+}
+
+// ─── Online Coupons (/api/coupon-online → bi_coupons_online) ─────────────
+
+/** GET /api/coupon-online — List online course coupons from bi_coupons_online */
+export async function getOnlineCoupons(
+  params?: {
+    status?: "active" | "expired" | string;
+    discount_type?: "percentage" | "amount" | string;
+    course_id?: number;
+    user_id?: number;
+    search?: string;
+  },
+  userId?: number,
+  userRole?: "user" | "student" | "admin"
+): Promise<ApiResponse<CouponItem[]>> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set("status", params.status);
+  if (params?.discount_type) query.set("discount_type", params.discount_type);
+  if (params?.course_id) query.set("course_id", String(params.course_id));
+  if (params?.user_id) query.set("user_id", String(params.user_id));
+  if (params?.search) query.set("search", params.search);
+  const qs = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest<CouponItem[]>(`/api/coupon-online${qs}`, { userId, userRole });
+}
+
+/** POST /api/coupon-online/validate — Validate online coupon applicability & calculate server-side discount against bi_coupons_online */
+export async function validateOnlineCoupon(
+  payload: ValidateCouponPayload,
+  userId?: number,
+  userRole?: "user" | "student" | "admin"
+): Promise<ApiResponse<CouponValidationData>> {
+  return apiRequest<CouponValidationData>("/api/coupon-online/validate", {
+    method: "POST",
+    userId,
+    userRole,
+    body: payload,
+  });
+}
+
+/** Backward compatibility alias for validateOnlineCoupon */
+export const validateCoupon = validateOnlineCoupon;
+
+// ─── Online Quiz & Results APIs ──────────────────────────────────────────
+
+export interface QuizQuestion {
+  quiz_id: number;
+  quiz_questions: string;
+  quiz_option_1: string;
+  quiz_option_2: string;
+  quiz_option_3: string;
+  quiz_option_4: string;
+  quiz_correct_answer?: number;
+}
+
+export interface OnlineResultExtra {
+  attempt: number;
+  max_attempts: number;
+  total_questions: number;
+  correct: number;
+  wrong: number;
+  unanswered: number;
+  marks_per_question: number;
+  total_marks: number;
+  percentage: number;
+  passed: boolean;
+  duration_minutes?: number;
+  time_spent_seconds?: number;
+  completed_at: string;
+  attempts_history?: Array<{
+    attempt: number;
+    marks: number;
+    percentage: number;
+    correct: number;
+    date: string;
+  }>;
+}
+
+export interface OnlineResultRecord {
+  result_id: number;
+  std_id: number;
+  user_id?: number;
+  course_id: number;
+  marks: number;
+  created_at: string;
+  updated_at: string;
+  extra?: OnlineResultExtra;
+  st_name?: string;
+  st_regno?: string;
+  course_name?: string;
+  course_code?: string;
+}
+
+/** GET /api/online-quiz-questions/random/{count} — Fetch random questions */
+export async function getOnlineQuizQuestions(
+  count: number = 50,
+  courseId?: number
+): Promise<ApiResponse<QuizQuestion[]>> {
+  const query = courseId ? `?course_id=${courseId}` : "";
+  return apiRequest<QuizQuestion[]>(`/api/online-quiz-questions/random/${count}${query}`);
+}
+
+/** GET /api/online-results — List results for student */
+export async function getOnlineResults(
+  params?: {
+    std_id?: number;
+    user_id?: number;
+    course_id?: number;
+    page?: number;
+    limit?: number;
+  },
+  userId?: number,
+  userRole?: "user" | "student" | "admin",
+  studentId?: number
+): Promise<ApiResponse<{ results: OnlineResultRecord[]; pagination: any }>> {
+  const query = new URLSearchParams();
+  if (params?.std_id) query.set("std_id", String(params.std_id));
+  if (params?.user_id) query.set("user_id", String(params.user_id));
+  if (params?.course_id) query.set("course_id", String(params.course_id));
+  if (params?.page) query.set("page", String(params.page));
+  if (params?.limit) query.set("limit", String(params.limit));
+  const qs = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest(`/api/online-results${qs}`, { userId, userRole, studentId });
+}
+
+/** Submit Quiz Result (Inserts on 1st attempt, Updates on 2nd/3rd attempts) */
+export async function submitOnlineQuizResult(
+  payload: {
+    std_id?: number;
+    user_id?: number;
+    course_id: number;
+    marks: number;
+    extra: Partial<OnlineResultExtra>;
+    st_name?: string;
+    st_regno?: string;
+    course_name?: string;
+    course_code?: string;
+  },
+  userId?: number,
+  userRole?: "user" | "student" | "admin",
+  studentId?: number
+): Promise<ApiResponse<OnlineResultRecord>> {
+  return apiRequest<OnlineResultRecord>("/api/online-results", {
+    method: "POST",
+    userId,
+    userRole,
+    studentId,
+    body: payload,
+  });
+}
+
+
+
+// ── Course Feedback API ──────────────────────────────────────────
+
+export interface CourseFeedbackRecord {
+  feedback_id: number;
+  coures_id: number;
+  user_id?: number | null;
+  student_name: string;
+  comment: string;
+  created_at?: string;
+  updated_at?: string;
+  extra?: {
+    rating?: number;
+    difficulty?: string;
+    recommend?: boolean;
+    tags?: string[];
+    [key: string]: any;
+  } | null;
+}
+
+/** GET /api/online-course-feedback — Fetch course feedbacks */
+export async function getOnlineCourseFeedback(
+  courseId?: number,
+  options?: { page?: number; limit?: number }
+): Promise<ApiResponse<CourseFeedbackRecord[]>> {
+  const query = new URLSearchParams();
+  if (courseId) query.set("coures_id", String(courseId));
+  if (options?.page) query.set("page", String(options.page));
+  if (options?.limit) query.set("limit", String(options.limit));
+  const qs = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest<CourseFeedbackRecord[]>(`/api/online-course-feedback${qs}`);
+}
+
+/** POST /api/online-course-feedback — Submit course feedback & rating */
+export async function submitOnlineCourseFeedback(
+  payload: {
+    coures_id: number;
+    comment: string;
+    extra?: {
+      rating?: number;
+      difficulty?: string;
+      recommend?: boolean;
+      tags?: string[];
+      [key: string]: any;
+    } | null;
+  },
+  userId?: number,
+  userRole?: "user" | "student" | "admin"
+): Promise<ApiResponse<CourseFeedbackRecord>> {
+  return apiRequest<CourseFeedbackRecord>("/api/online-course-feedback", {
+    method: "POST",
+    userId,
+    userRole,
+    body: payload,
+  });
+}
+
+/** PUT /api/online-course-feedback/{id} — Replace feedback */
+export async function updateOnlineCourseFeedback(
+  feedbackId: number,
+  payload: {
+    coures_id: number;
+    comment: string;
+    extra?: any;
+  },
+  userId?: number,
+  userRole?: "user" | "student" | "admin"
+): Promise<ApiResponse<CourseFeedbackRecord>> {
+  return apiRequest<CourseFeedbackRecord>(`/api/online-course-feedback/${feedbackId}`, {
+    method: "PUT",
+    userId,
+    userRole,
+    body: payload,
+  });
+}
+
+/** DELETE /api/online-course-feedback/{id} — Delete feedback */
+export async function deleteOnlineCourseFeedback(
+  feedbackId: number,
+  userId?: number,
+  userRole?: "user" | "student" | "admin"
+): Promise<ApiResponse<null>> {
+  return apiRequest<null>(`/api/online-course-feedback/${feedbackId}`, {
+    method: "DELETE",
+    userId,
+    userRole,
+  });
+}
+
+// ─── E-Books Library (bi_ebook_library) ────────────────────────────────────
+
+export interface EbookChapter {
+  title: string;
+  page: number;
+}
+
+export interface EbookRecord {
+  ebook_id: number;
+  ebook_title: string;
+  ebook_subtitle?: string;
+  ebook_author: string;
+  ebook_description?: string;
+  ebook_edition?: string;
+  ebook_publication?: string;
+  ebook_pdf_link: string;
+  raw_pdf_url?: string;
+  category?: string;
+  cover_image?: string;
+  publication_year?: number;
+  total_pages?: number;
+  is_free?: boolean;
+  extra?: {
+    category?: string;
+    cover_image?: string;
+    pages?: number;
+    year?: number;
+    tag?: string;
+    accent_color?: string;
+    tech_stack?: string[];
+    chapters?: EbookChapter[];
+    [key: string]: any;
+  } | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** GET /api/ebooks — Fetch all ebooks or filter by search/category/page */
+export async function getEbooks(params?: {
+  search?: string;
+  category?: string;
+  author?: string;
+  page?: number;
+  limit?: number;
+}): Promise<ApiResponse<EbookRecord[]>> {
+  const query = new URLSearchParams();
+  if (params?.search) query.append("search", params.search);
+  if (params?.category && params.category !== "All") query.append("category", params.category);
+  if (params?.author) query.append("author", params.author);
+  if (params?.page) query.append("page", String(params.page));
+  if (params?.limit) query.append("limit", String(params.limit));
+
+  const qs = query.toString();
+  const endpoint = qs ? `/api/ebooks?${qs}` : "/api/ebooks";
+  return apiRequest<EbookRecord[]>(endpoint, { method: "GET" });
+}
+
+/** GET /api/ebooks/{id} — Fetch single ebook by ID */
+export async function getEbookById(ebookId: number): Promise<ApiResponse<EbookRecord>> {
+  return apiRequest<EbookRecord>(`/api/ebooks/${ebookId}`, { method: "GET" });
+}

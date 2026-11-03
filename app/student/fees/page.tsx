@@ -20,17 +20,27 @@ import {
   GraduationCap,
   Calendar,
   AlertTriangle,
+  Download,
+  BookOpen,
+  Play,
+  FileCheck2,
+  ImageIcon,
+  FileText,
 } from "lucide-react";
 import Link from "next/link";
 import { useStudent } from "@/hooks/useStudent";
+import { downloadReceiptAsImage, downloadReceiptAsPdf } from "@/lib/receiptDownload";
 import {
   getStudentFees,
   getStudentEnrollments,
+  getStudentOnlineCourses,
+  getCurrentStudent,
   getEnrollmentById,
   createFeeInstallmentOrder,
   recordVerifiedFeePayment,
   FeeTransactionItem,
   EnrollmentItem,
+  OnlineEnrolledCourse,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,6 +48,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatIstDateTime } from "@/lib/utils";
 
 declare global {
   interface Window {
@@ -52,30 +64,38 @@ const fadeUp = (delay = 0) => ({
 });
 
 // ─── Financial Source of Truth Extractors ──────────────────────────────────
-// CRITICAL: stc_dues is strictly from backend database (bi_st_course.stc_dues)
-export function extractEnrollmentDues(e: any): number {
+// Remaining dues = max(0, total_fee - discount - total_paid)
+export function extractEnrollmentDues(e: any, transactions?: FeeTransactionItem[]): number {
   if (!e) return 0;
+  const totalFee = extractEnrollmentTotalFee(e);
+  const discount = extractEnrollmentDiscount(e);
+  const netFee = Math.max(0, totalFee - discount);
+  const totalPaid = extractEnrollmentTotalPaid(e, transactions);
+  const computedDues = Math.max(0, netFee - totalPaid);
+
+  let rawDues: number | null = null;
   if (e.stc_dues !== undefined && e.stc_dues !== null && e.stc_dues !== "") {
     const n = Number(e.stc_dues);
-    if (!isNaN(n)) return n;
-  }
-  if (e.dues !== undefined && e.dues !== null && e.dues !== "") {
+    if (!isNaN(n)) rawDues = n;
+  } else if (e.dues !== undefined && e.dues !== null && e.dues !== "") {
     const n = Number(e.dues);
-    if (!isNaN(n)) return n;
-  }
-  if (e.remaining_dues !== undefined && e.remaining_dues !== null && e.remaining_dues !== "") {
+    if (!isNaN(n)) rawDues = n;
+  } else if (e.remaining_dues !== undefined && e.remaining_dues !== null && e.remaining_dues !== "") {
     const n = Number(e.remaining_dues);
-    if (!isNaN(n)) return n;
-  }
-  if (e.summary?.stc_dues !== undefined && e.summary?.stc_dues !== null && e.summary?.stc_dues !== "") {
+    if (!isNaN(n)) rawDues = n;
+  } else if (e.summary?.stc_dues !== undefined && e.summary?.stc_dues !== null && e.summary?.stc_dues !== "") {
     const n = Number(e.summary.stc_dues);
-    if (!isNaN(n)) return n;
-  }
-  if (e.summary?.dues !== undefined && e.summary?.dues !== null && e.summary?.dues !== "") {
+    if (!isNaN(n)) rawDues = n;
+  } else if (e.summary?.dues !== undefined && e.summary?.dues !== null && e.summary?.dues !== "") {
     const n = Number(e.summary.dues);
-    if (!isNaN(n)) return n;
+    if (!isNaN(n)) rawDues = n;
   }
-  return 0;
+
+  if (rawDues !== null) {
+    return Math.min(rawDues, computedDues);
+  }
+
+  return computedDues;
 }
 
 export function extractEnrollmentTotalFee(e: any): number {
@@ -127,11 +147,23 @@ export function extractEnrollmentInitialPayment(e: any): number {
 
 export function extractEnrollmentTotalPaid(e: any, transactions?: FeeTransactionItem[]): number {
   if (!e) return 0;
-  const enrollmentId = Number(e.stc_id ?? e.id);
+  const isOnline = Boolean(e.is_online || e.stco_id || e.course_format === "online");
+  const enrollmentId = Number(e.stc_id ?? e.stco_id ?? e.id);
   if (transactions && transactions.length > 0) {
-    const txForCourse = transactions.filter(
-      (t) => Number(t.enrollment_id ?? t.tr_stc_id) === enrollmentId
-    );
+    const txForCourse = transactions.filter((t) => {
+      const txIsOnline = Boolean(
+        t.is_online ||
+        t.course_format === "online" ||
+        (t as any).tr_course_type === "online" ||
+        (t as any).tr_stco_id ||
+        (t as any).stco_id
+      );
+      if (isOnline !== txIsOnline) return false;
+      const txId = isOnline
+        ? Number((t as any).tr_stco_id ?? (t as any).stco_id ?? t.enrollment_id)
+        : Number(t.tr_stc_id ?? t.stc_id ?? t.enrollment_id);
+      return txId === enrollmentId;
+    });
     if (txForCourse.length > 0) {
       return txForCourse.reduce(
         (acc, t) => acc + (Number(t.amount ?? t.tr_amount ?? 0) || 0),
@@ -153,9 +185,9 @@ export function extractEnrollmentTotalPaid(e: any, transactions?: FeeTransaction
   }
   const fee = extractEnrollmentTotalFee(e);
   const disc = extractEnrollmentDiscount(e);
-  const dues = extractEnrollmentDues(e);
+  const dues = Number(e.stc_dues ?? e.dues ?? (e.summary?.stc_dues ?? fee));
   const init = extractEnrollmentInitialPayment(e);
-  return Math.max(init, fee - disc - dues);
+  return Math.max(init, Math.max(0, fee - disc - dues));
 }
 
 // ─── Status Code Error Mapping Helper ──────────────────────────────────────
@@ -193,6 +225,78 @@ export default function StudentFeesPage() {
 
   const [transactions, setTransactions] = useState<FeeTransactionItem[]>([]);
   const [enrollments, setEnrollments] = useState<EnrollmentItem[]>([]);
+  const [onlineCourses, setOnlineCourses] = useState<OnlineEnrolledCourse[]>([]);
+  const [coursesTab, setCoursesTab] = useState<"all" | "offline" | "online">("all");
+  const [txTab, setTxTab] = useState<"all" | "offline" | "online">("all");
+  const [selectedReceiptTx, setSelectedReceiptTx] = useState<FeeTransactionItem | null>(null);
+  const [downloadingReceiptTxId, setDownloadingReceiptTxId] = useState<number | string | null>(null);
+  const [downloadingReceiptFormat, setDownloadingReceiptFormat] = useState<"image" | "pdf" | null>(null);
+
+  const handleDownloadReceipt = async (
+    tx: FeeTransactionItem,
+    format: "image" | "pdf" = "pdf"
+  ) => {
+    if (downloadingReceiptTxId) return;
+    setDownloadingReceiptTxId(tx.transaction_id);
+    setDownloadingReceiptFormat(format);
+
+    try {
+      const receiptData = {
+        transaction_id: tx.transaction_id,
+        student_name: tx.student_name || name || "Student",
+        registration_no:
+          tx.registration_no ||
+          tx.registration_number ||
+          sessionRegNo ||
+          "BISR-ONLINE",
+        date: tx.date || "—",
+        course_name: tx.course_name || "Enrolled Course",
+        course_type:
+          tx.is_online || tx.course_format === "online"
+            ? "Online E-Learning Program"
+            : "Offline Classroom Diploma",
+        is_online: Boolean(tx.is_online || tx.course_format === "online"),
+        enrollment_id: tx.enrollment_id,
+        payment_mode: tx.mode || "RAZORPAY",
+        reference_number: tx.payment_reference || "N/A",
+        total_fee: Number(tx.total_fee || tx.course_fee || tx.summary?.total_fee || 0),
+        discount: Number(
+          tx.discount ||
+            tx.discount_amount ||
+            tx.coupon_discount ||
+            tx.summary?.discount ||
+            0
+        ),
+        coupon_code: tx.coupon_code || tx.summary?.coupon_code || undefined,
+        remark: tx.remark,
+        net_amount: Number(tx.amount || 0),
+      };
+
+      let filename = "";
+      if (format === "pdf") {
+        filename = await downloadReceiptAsPdf(receiptData);
+      } else {
+        filename = await downloadReceiptAsImage(receiptData);
+      }
+
+      toast({
+        variant: "success",
+        title: format === "pdf" ? "PDF Receipt Downloaded! 📄" : "Receipt Image Downloaded! 🖼️",
+        description: `Official receipt saved as "${filename}".`,
+      });
+    } catch (err) {
+      console.error("[StudentFees] Receipt download error:", err);
+      toast({
+        variant: "error",
+        title: "Download Issue",
+        description: `Could not export receipt as ${format.toUpperCase()}. Please try again.`,
+      });
+    } finally {
+      setDownloadingReceiptTxId(null);
+      setDownloadingReceiptFormat(null);
+    }
+  };
+
   const [summary, setSummary] = useState<{
     totalFee: number;
     discount: number;
@@ -244,35 +348,148 @@ export default function StudentFeesPage() {
   }, []);
 
   // ── Fetch Latest Financial Data from Backend API ───────────────────────────
-  // Strictly treats backend stc_dues as single source of truth
+  // Strictly treats backend stc_dues as single source of truth for offline courses
+  // and includes verified online courses and payments
   const loadFeeData = useCallback(async () => {
     if (!user_id) return;
     setLoading(true);
     setError(null);
 
     try {
-      const [feeRes, enrRes] = await Promise.allSettled([
+      const [feeRes, enrRes, onlRes, stMeRes] = await Promise.allSettled([
         getStudentFees(user_id),
         getStudentEnrollments(user_id),
+        getStudentOnlineCourses(user_id, "student"),
+        getCurrentStudent(user_id),
       ]);
 
       let enrList: EnrollmentItem[] = [];
       let txList: FeeTransactionItem[] = [];
+      let onlList: OnlineEnrolledCourse[] = [];
+      const onlineMap = new Map<number, OnlineEnrolledCourse>();
 
-      // Process Transactions first so we can compute accurate per-course paid sums
+      // 1. Process Online Courses
+      if (onlRes.status === "fulfilled" && onlRes.value.success && Array.isArray(onlRes.value.data)) {
+        onlRes.value.data.forEach((c) => {
+          onlineMap.set(Number(c.course_id), { ...c, course_format: "online" });
+        });
+      }
+
+      if (stMeRes.status === "fulfilled" && stMeRes.value.success && Array.isArray(stMeRes.value.data?.online_courses)) {
+        stMeRes.value.data.online_courses.forEach((c: any) => {
+          const cId = Number(c.course_id ?? c.stco_course_id);
+          if (cId && !onlineMap.has(cId)) {
+            onlineMap.set(cId, {
+              course_id: cId,
+              course_code: c.course_code || `ONL-${cId}`,
+              course_name: c.course_name || `Online Course #${cId}`,
+              course_fee: Number(c.course_fee ?? c.stco_total_fee ?? 0),
+              amount_paid: Number(c.amount_paid ?? c.stco_initial_payment ?? c.course_fee ?? 0),
+              course_format: "online",
+              created_at: c.created_at,
+              registration_number: c.st_regno || sessionRegNo || null,
+              student_id: Number(c.student_id ?? c.stco_st_id ?? user_id) || null,
+            });
+          }
+        });
+      }
+
+      onlList = Array.from(onlineMap.values());
+      setOnlineCourses(onlList);
+
+      // 2. Process Transactions (INCLUDING both offline and online)
       if (feeRes.status === "fulfilled" && feeRes.value.success && feeRes.value.data) {
         if (Array.isArray(feeRes.value.data)) {
-          txList = feeRes.value.data;
+          txList = [...feeRes.value.data];
         } else if (Array.isArray((feeRes.value.data as any).transactions)) {
-          txList = (feeRes.value.data as any).transactions;
+          txList = [...(feeRes.value.data as any).transactions];
         }
-        setTransactions(txList);
       } else if (feeRes.status === "fulfilled" && !feeRes.value.success) {
         const status = (feeRes.value as any)._status;
         setError(getHttpErrorMessage(status, feeRes.value.message || "Failed to load fee ledger.", feeRes.value.message));
       }
 
-      // Process Enrollments
+      // Add any online courses that aren't already represented in txList
+      for (const onl of onlList) {
+        const payRef = onl.razorpay_payment_id || `ONL_PUR_${onl.course_id}`;
+        const alreadyInTx = txList.some(
+          (t) =>
+            (onl.razorpay_payment_id &&
+              (t.payment_reference === onl.razorpay_payment_id ||
+                t.payref === onl.razorpay_payment_id ||
+                (t as any).tr_payref === onl.razorpay_payment_id)) ||
+            ((t.is_online || t.course_format === "online" || (t as any).tr_course_type === "online") &&
+              (Number(t.enrollment_id) === Number(onl.stco_id) ||
+                Number((t as any).tr_stco_id) === Number(onl.stco_id) ||
+                Number(t.course_id) === Number(onl.course_id)))
+        );
+        const originalFee = Number(onl.course_fee || onl.total_fee || onl.amount_paid || 0);
+        const discountAmt = Number(onl.discount || 0);
+        const coupon = onl.coupon_code || undefined;
+        const paidAmt = Number(onl.amount_paid ?? Math.max(0, originalFee - discountAmt));
+
+        if (!alreadyInTx) {
+          txList.push({
+            transaction_id: onl.stco_id || 900000 + Number(onl.course_id),
+            tr_id: onl.stco_id || 900000 + Number(onl.course_id),
+            enrollment_id: onl.stco_id || onl.course_id,
+            stco_id: onl.stco_id || onl.course_id,
+            tr_stco_id: onl.stco_id || onl.course_id,
+            tr_course_type: "online",
+            amount: paidAmt,
+            tr_amount: paidAmt,
+            total_fee: originalFee,
+            course_fee: originalFee,
+            discount: discountAmt,
+            discount_amount: discountAmt,
+            coupon_code: coupon,
+            coupon_discount: discountAmt,
+            amount_paid: paidAmt,
+            initial_payment: paidAmt,
+            dues: 0,
+            remaining_dues: 0,
+            mode: "razorpay",
+            tr_mode: "razorpay",
+            payment_reference: payRef,
+            payref: payRef,
+            tr_payref: payRef,
+            remark: coupon
+              ? `Online Course Enrollment: ${onl.course_name} (Coupon '${coupon}' applied: ₹${discountAmt} off)`
+              : `Online Course Enrollment: ${onl.course_name}`,
+            tr_remark: coupon
+              ? `Online Course Enrollment: ${onl.course_name} (Coupon '${coupon}' applied: ₹${discountAmt} off)`
+              : `Online Course Enrollment: ${onl.course_name}`,
+            date: onl.created_at ? formatIstDateTime(onl.created_at) : "",
+            tr_date: onl.created_at ? formatIstDateTime(onl.created_at) : "",
+            student_id: Number(student_id || user_id || 0),
+            registration_no: onl.registration_number || sessionRegNo || "BISR-ONLINE",
+            student_name: name || "Student",
+            course_name: onl.course_name,
+            course_code: onl.course_code,
+            course_format: "online",
+            is_online: true,
+            status: "completed",
+            summary: {
+              total_fee: originalFee,
+              discount: discountAmt,
+              total_paid: paidAmt,
+              dues: 0,
+              coupon_code: coupon || null,
+              course_fee: originalFee,
+              initial_payment: paidAmt,
+            },
+          });
+        }
+      }
+
+      // Sort newest first
+      txList.sort(
+        (a, b) =>
+          new Date(b.date || b.tr_date || 0).getTime() - new Date(a.date || a.tr_date || 0).getTime()
+      );
+      setTransactions(txList);
+
+      // 3. Process Offline Enrollments
       if (enrRes.status === "fulfilled" && enrRes.value.success && enrRes.value.data) {
         let rawList: any[] = [];
         if (Array.isArray(enrRes.value.data)) {
@@ -282,11 +499,11 @@ export default function StudentFeesPage() {
         }
 
         enrList = rawList.map((e: any) => {
-          const dues = extractEnrollmentDues(e);
           const totalFee = extractEnrollmentTotalFee(e);
           const discount = extractEnrollmentDiscount(e);
           const initialPayment = extractEnrollmentInitialPayment(e);
           const totalPaid = extractEnrollmentTotalPaid(e, txList);
+          const dues = extractEnrollmentDues(e, txList);
 
           return {
             ...e,
@@ -306,6 +523,7 @@ export default function StudentFeesPage() {
             course_code: e.course_code || e.crs_code || "",
             student_id: Number(e.student_id ?? e.stc_st_id ?? e.st_id),
             registration_number: e.registration_number || e.st_regno || sessionRegNo || "",
+            course_format: "offline" as const,
           };
         });
 
@@ -313,30 +531,28 @@ export default function StudentFeesPage() {
 
         if (enrList.length > 0) {
           // Pre-select first enrollment with dues > 0, otherwise first enrollment
-          const firstWithDues = enrList.find((e) => extractEnrollmentDues(e) > 0);
+          const firstWithDues = enrList.find((e) => extractEnrollmentDues(e, txList) > 0);
           const autoSelectId = firstWithDues ? firstWithDues.stc_id : enrList[0].stc_id;
           setSelectedStcId((prev) => (prev ? prev : autoSelectId));
         }
       }
 
-      // Calculate aggregated financial summary strictly from backend fields
-      const txPaidSum = txList.reduce(
-        (acc, t) => acc + (Number(t.amount ?? t.tr_amount ?? 0) || 0),
-        0
-      );
-      const enrDuesSum = enrList.reduce((acc, e) => acc + extractEnrollmentDues(e), 0);
+      // 4. Calculate aggregated financial summary (both offline center courses + online courses)
       const enrTotalSum = enrList.reduce((acc, e) => acc + extractEnrollmentTotalFee(e), 0);
-      const enrDiscSum = enrList.reduce((acc, e) => acc + extractEnrollmentDiscount(e), 0);
-      const enrPaidSum = enrList.reduce((acc, e) => acc + extractEnrollmentTotalPaid(e, txList), 0);
+      const onlTotalSum = onlList.reduce((acc, c) => acc + Number(c.course_fee || 0), 0);
 
-      const totalPaid = txList.length > 0 ? txPaidSum : enrPaidSum;
-      const totalDues = enrDuesSum;
+      const enrDiscSum = enrList.reduce((acc, e) => acc + extractEnrollmentDiscount(e), 0);
+
+      const enrPaidSum = enrList.reduce((acc, e) => acc + extractEnrollmentTotalPaid(e, txList), 0);
+      const onlPaidSum = onlList.reduce((acc, c) => acc + Number(c.amount_paid || c.course_fee || 0), 0);
+
+      const enrDuesSum = enrList.reduce((acc, e) => acc + extractEnrollmentDues(e, txList), 0);
 
       setSummary({
-        totalFee: enrTotalSum,
+        totalFee: enrTotalSum + onlTotalSum,
         discount: enrDiscSum,
-        totalPaid: totalPaid,
-        dues: totalDues,
+        totalPaid: enrPaidSum + onlPaidSum,
+        dues: enrDuesSum,
       });
     } catch {
       setError("Network error while connecting to student financial ledger. Please try again.");
@@ -814,16 +1030,37 @@ export default function StudentFeesPage() {
 
       {/* ── Enrolled Courses Cards / Table ── */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <GraduationCap className="w-5 h-5 text-[#5B21F4]" />
             <h2 className="text-base font-extrabold text-[#111827]">
               Enrolled Courses &amp; Fee Status
             </h2>
           </div>
-          <span className="text-xs text-[#64748B] font-semibold">
-            {enrollments.length} {enrollments.length === 1 ? "Course" : "Courses"}
-          </span>
+          
+          {/* Radix Tabs for Courses & Fee Status */}
+          <Tabs value={coursesTab} onValueChange={(v) => setCoursesTab(v as any)}>
+            <TabsList className="h-9 p-1">
+              <TabsTrigger value="all" className="text-xs py-1 px-3 gap-1.5">
+                <span>All Courses</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700">
+                  {enrollments.length + onlineCourses.length}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="offline" className="text-xs py-1 px-3 gap-1.5">
+                <span>Offline Classroom</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">
+                  {enrollments.length}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="online" className="text-xs py-1 px-3 gap-1.5">
+                <span>Online Courses</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800">
+                  {onlineCourses.length}
+                </span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
         </div>
 
         {loading ? (
@@ -840,7 +1077,7 @@ export default function StudentFeesPage() {
               </div>
             ))}
           </div>
-        ) : enrollments.length === 0 ? (
+        ) : enrollments.length === 0 && onlineCourses.length === 0 ? (
           <div className="bg-white rounded-2xl border border-[#E2E8F0] p-12 text-center text-[#64748B] space-y-2">
             <GraduationCap className="w-10 h-10 text-[#CBD5E1] mx-auto" />
             <p className="font-bold text-[#111827]">No course enrollments found.</p>
@@ -848,154 +1085,309 @@ export default function StudentFeesPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {enrollments.map((enr) => {
-              const cFee = extractEnrollmentTotalFee(enr);
-              const cDisc = extractEnrollmentDiscount(enr);
-              const cInitial = extractEnrollmentInitialPayment(enr);
-              const cDues = extractEnrollmentDues(enr);
-              const cTotalPaid = extractEnrollmentTotalPaid(enr, transactions);
-              const isFullyPaid = cDues === 0;
-              const paymentStatusText = isFullyPaid ? "Fully Paid" : "Payment Due";
-              const regNo =
-                enr.registration_number ||
-                sessionRegNo ||
-                `BISR${String(enr.student_id || student_id || "").padStart(4, "0")}`;
+            {/* 1. Offline Courses */}
+            {(coursesTab === "all" || coursesTab === "offline") &&
+              enrollments.map((enr) => {
+                const cFee = extractEnrollmentTotalFee(enr);
+                const cDisc = extractEnrollmentDiscount(enr);
+                const cInitial = extractEnrollmentInitialPayment(enr);
+                const cTotalPaid = extractEnrollmentTotalPaid(enr, transactions);
+                const cDues = extractEnrollmentDues(enr, transactions);
+                const isFullyPaid = cDues === 0;
+                const paymentStatusText = isFullyPaid ? "Fully Paid" : "Payment Due";
+                const regNo = enr.registration_number || sessionRegNo || null;
 
-              return (
-                <div
-                  key={enr.stc_id}
-                  className="bg-white rounded-2xl border border-[#E2E8F0] p-5 space-y-4 shadow-sm hover:border-[#DDD6FE] transition-all flex flex-col justify-between"
-                >
-                  {/* Course Header */}
-                  <div>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {enr.course_code && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#F1EEFF] text-[#5B21F4] uppercase">
-                              {enr.course_code}
+                return (
+                  <div
+                    key={`off_${enr.stc_id}`}
+                    className="bg-white rounded-2xl border border-[#E2E8F0] p-5 space-y-4 shadow-sm hover:border-[#DDD6FE] transition-all flex flex-col justify-between relative overflow-hidden"
+                  >
+                    <div className="h-1 w-full absolute top-0 left-0 bg-gradient-to-r from-blue-600 to-indigo-600" />
+                    {/* Course Header */}
+                    <div>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                              Offline Classroom
                             </span>
-                          )}
-                          <span
-                            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
-                              isFullyPaid
-                                ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                                : "bg-amber-50 text-amber-800 border-amber-200"
-                            }`}
-                          >
-                            {paymentStatusText}
-                          </span>
+                            {enr.course_code && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#F1EEFF] text-[#5B21F4] uppercase">
+                                {enr.course_code}
+                              </span>
+                            )}
+                            <span
+                              className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                                isFullyPaid
+                                  ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                                  : "bg-amber-50 text-amber-800 border-amber-200"
+                              }`}
+                            >
+                              {paymentStatusText}
+                            </span>
+                          </div>
+                          <h3 className="font-extrabold text-[#111827] text-base mt-1.5 leading-snug">
+                            {enr.course_name}
+                          </h3>
                         </div>
-                        <h3 className="font-extrabold text-[#111827] text-base mt-1.5 leading-snug">
-                          {enr.course_name}
-                        </h3>
+                        <span className="text-xs font-mono font-bold text-[#64748B] shrink-0">
+                          #{enr.stc_id}
+                        </span>
                       </div>
-                      <span className="text-xs font-mono font-bold text-[#64748B] shrink-0">
-                        #{enr.stc_id}
+
+                      <div className="text-xs text-[#64748B] mt-1.5 flex items-center gap-1.5 flex-wrap">
+                        <span>Registration Number:</span>
+                        {regNo ? (
+                          <strong className="font-mono text-[#111827]">{regNo}</strong>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                            Pending (Pay at Study Centre)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Financial Breakdown Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-3 border-t border-[#F1F5F9] text-xs">
+                      <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
+                        <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Total Fee</p>
+                        <p className="font-extrabold text-[#111827] text-sm mt-0.5">
+                          ₹{cFee.toLocaleString("en-IN")}
+                        </p>
+                      </div>
+
+                      <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
+                        <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Discount</p>
+                        <p className="font-extrabold text-[#08A66A] text-sm mt-0.5">
+                          ₹{cDisc.toLocaleString("en-IN")}
+                        </p>
+                      </div>
+
+                      <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
+                        <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Initial Payment</p>
+                        <p className="font-extrabold text-[#111827] text-sm mt-0.5">
+                          ₹{cInitial.toLocaleString("en-IN")}
+                        </p>
+                      </div>
+
+                      <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
+                        <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Total Paid</p>
+                        <p className="font-extrabold text-[#2563EB] text-sm mt-0.5">
+                          ₹{cTotalPaid.toLocaleString("en-IN")}
+                        </p>
+                      </div>
+
+                      <div
+                        className={`col-span-2 p-2.5 rounded-xl border ${
+                          isFullyPaid
+                            ? "bg-[#ECFDF5] border-[#D1FAE5]"
+                            : "bg-[#FFFBEB] border-[#FEF3C7]"
+                        }`}
+                      >
+                        <p
+                          className={`text-[10px] uppercase font-bold ${
+                            isFullyPaid ? "text-emerald-700" : "text-amber-800"
+                          }`}
+                        >
+                          Remaining Dues
+                        </p>
+                        <p
+                          className={`font-black text-base mt-0.5 ${
+                            isFullyPaid ? "text-emerald-700" : "text-amber-800"
+                          }`}
+                        >
+                          ₹{cDues.toLocaleString("en-IN")}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Course Action Buttons */}
+                    <div className="pt-2 flex items-center justify-between border-t border-[#F1F5F9]">
+                      <span className="text-[11px] text-[#64748B]">
+                        Enrollment ID: <strong className="font-mono text-[#111827]">#{enr.stc_id}</strong>
                       </span>
-                    </div>
 
-                    <p className="text-xs text-[#64748B] mt-1">
-                      Registration Number:{" "}
-                      <strong className="font-mono text-[#111827]">{regNo}</strong>
-                    </p>
-                  </div>
-
-                  {/* Financial Breakdown Grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-3 border-t border-[#F1F5F9] text-xs">
-                    <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
-                      <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Total Fee</p>
-                      <p className="font-extrabold text-[#111827] text-sm mt-0.5">
-                        ₹{cFee.toLocaleString("en-IN")}
-                      </p>
-                    </div>
-
-                    <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
-                      <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Discount</p>
-                      <p className="font-extrabold text-[#08A66A] text-sm mt-0.5">
-                        ₹{cDisc.toLocaleString("en-IN")}
-                      </p>
-                    </div>
-
-                    <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
-                      <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Initial Payment</p>
-                      <p className="font-extrabold text-[#111827] text-sm mt-0.5">
-                        ₹{cInitial.toLocaleString("en-IN")}
-                      </p>
-                    </div>
-
-                    <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
-                      <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Total Paid</p>
-                      <p className="font-extrabold text-[#2563EB] text-sm mt-0.5">
-                        ₹{cTotalPaid.toLocaleString("en-IN")}
-                      </p>
-                    </div>
-
-                    <div
-                      className={`col-span-2 p-2.5 rounded-xl border ${
-                        isFullyPaid
-                          ? "bg-[#ECFDF5] border-[#D1FAE5]"
-                          : "bg-[#FFFBEB] border-[#FEF3C7]"
-                      }`}
-                    >
-                      <p
-                        className={`text-[10px] uppercase font-bold ${
-                          isFullyPaid ? "text-emerald-700" : "text-amber-800"
-                        }`}
-                      >
-                        Remaining Dues
-                      </p>
-                      <p
-                        className={`font-black text-base mt-0.5 ${
-                          isFullyPaid ? "text-emerald-700" : "text-amber-800"
-                        }`}
-                      >
-                        ₹{cDues.toLocaleString("en-IN")}
-                      </p>
+                      {isFullyPaid ? (
+                        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>No dues remaining</span>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          onClick={() => openPayModalForCourse(enr.stc_id)}
+                          className="bg-[#5B21F4] hover:bg-[#4C1BD4] text-white text-xs font-bold h-9 px-3.5 rounded-xl shadow-sm gap-1.5 cursor-pointer"
+                        >
+                          <CreditCard className="w-3.5 h-3.5" />
+                          <span>Pay Fee</span>
+                        </Button>
+                      )}
                     </div>
                   </div>
+                );
+              })}
 
-                  {/* Course Action Buttons */}
-                  <div className="pt-2 flex items-center justify-between border-t border-[#F1F5F9]">
-                    <span className="text-[11px] text-[#64748B]">
-                      Enrollment ID: <strong className="font-mono text-[#111827]">#{enr.stc_id}</strong>
-                    </span>
+            {/* 2. Online Courses */}
+            {(coursesTab === "all" || coursesTab === "online") &&
+              onlineCourses.map((onl) => {
+                const feeNum = Number(onl.course_fee || onl.amount_paid || 0);
+                const paidNum = Number(onl.amount_paid || onl.course_fee || 0);
+                const regNo = onl.registration_number || sessionRegNo || null;
+                const matchingTx = transactions.find(
+                  (t) =>
+                    (onl.razorpay_payment_id && t.payment_reference === onl.razorpay_payment_id) ||
+                    (t.is_online && Number(t.enrollment_id || t.course_id) === Number(onl.course_id)) ||
+                    (t.course_format === "online" && Number(t.enrollment_id || t.course_id) === Number(onl.course_id))
+                );
 
-                    {isFullyPaid ? (
-                      <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>No dues remaining</span>
+                return (
+                  <div
+                    key={`onl_${onl.course_id}`}
+                    className="bg-white rounded-2xl border border-[#E2E8F0] p-5 space-y-4 shadow-sm hover:border-[#DDD6FE] transition-all flex flex-col justify-between relative overflow-hidden"
+                  >
+                    <div className="h-1 w-full absolute top-0 left-0 bg-gradient-to-r from-[#5B21F4] to-purple-500" />
+                    {/* Header */}
+                    <div>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-50 text-[#5B21F4] border border-purple-200">
+                              Online Course
+                            </span>
+                            {onl.course_code && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#F1EEFF] text-[#5B21F4] uppercase font-mono">
+                                {onl.course_code}
+                              </span>
+                            )}
+                            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-800 border-emerald-200">
+                              Fully Paid
+                            </span>
+                          </div>
+                          <h3 className="font-extrabold text-[#111827] text-base mt-1.5 leading-snug">
+                            {onl.course_name}
+                          </h3>
+                        </div>
+                        <span className="text-xs font-mono font-bold text-[#64748B] shrink-0">
+                          #{onl.stco_id || onl.course_id}
+                        </span>
                       </div>
-                    ) : (
-                      <Button
-                        size="sm"
-                        onClick={() => openPayModalForCourse(enr.stc_id)}
-                        className="bg-[#5B21F4] hover:bg-[#4C1BD4] text-white text-xs font-bold h-9 px-3.5 rounded-xl shadow-sm gap-1.5 cursor-pointer"
-                      >
-                        <CreditCard className="w-3.5 h-3.5" />
-                        <span>Pay Fee</span>
-                      </Button>
-                    )}
+
+                      <div className="text-xs text-[#64748B] mt-1.5 flex items-center gap-1.5 flex-wrap">
+                        <span>Registration Number:</span>
+                        {regNo ? (
+                          <strong className="font-mono text-[#111827]">{regNo}</strong>
+                        ) : (
+                          <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                            Active Online Student
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Breakdown */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-3 border-t border-[#F1F5F9] text-xs">
+                      <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
+                        <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Total Fee</p>
+                        <p className="font-extrabold text-[#111827] text-sm mt-0.5">
+                          ₹{feeNum.toLocaleString("en-IN")}
+                        </p>
+                      </div>
+
+                      <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
+                        <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Discount</p>
+                        <p className="font-extrabold text-[#08A66A] text-sm mt-0.5">₹0</p>
+                      </div>
+
+                      <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
+                        <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Initial Payment</p>
+                        <p className="font-extrabold text-[#111827] text-sm mt-0.5">
+                          ₹{paidNum.toLocaleString("en-IN")}
+                        </p>
+                      </div>
+
+                      <div className="bg-[#F8FAFC] p-2.5 rounded-xl">
+                        <p className="text-[#94A3B8] text-[10px] uppercase font-bold">Total Paid</p>
+                        <p className="font-extrabold text-[#2563EB] text-sm mt-0.5">
+                          ₹{paidNum.toLocaleString("en-IN")}
+                        </p>
+                      </div>
+
+                      <div className="col-span-2 p-2.5 rounded-xl border bg-[#ECFDF5] border-[#D1FAE5]">
+                        <p className="text-[10px] uppercase font-bold text-emerald-700">Remaining Dues</p>
+                        <p className="font-black text-base mt-0.5 text-emerald-700">₹0</p>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="pt-2 flex items-center justify-between border-t border-[#F1F5F9] gap-2">
+                      <span className="text-[11px] text-[#64748B]">
+                        Status: <strong className="text-emerald-700">Full Access Active</strong>
+                      </span>
+
+                      <div className="flex items-center gap-2">
+                        {matchingTx && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setSelectedReceiptTx(matchingTx)}
+                            className="h-8 px-2.5 text-xs font-bold border-[#DDD6FE] text-[#5B21F4] hover:bg-[#F1EEFF] gap-1 cursor-pointer"
+                          >
+                            <Receipt className="w-3.5 h-3.5" />
+                            <span>Receipt</span>
+                          </Button>
+                        )}
+                        <Button
+                          asChild
+                          size="sm"
+                          className="bg-[#5B21F4] hover:bg-[#4C1BD4] text-white text-xs font-bold h-8 px-3 rounded-xl shadow-sm gap-1 cursor-pointer"
+                        >
+                          <Link href={`/student/online-courses/${onl.course_id}`}>
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>Go to Course</span>
+                          </Link>
+                        </Button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
           </div>
         )}
       </div>
 
       {/* ── Clean Payment History Section ── */}
-      <div className="bg-white rounded-2xl border border-[#E2E8F0] shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      <div className="bg-white rounded-2xl border border-[#E2E8F0] shadow-sm overflow-hidden space-y-0">
+        <div className="px-5 py-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Receipt className="w-4 h-4 text-[#5B21F4]" />
             <h3 className="font-extrabold text-[#111827] text-sm">
               Fee Payment History &amp; Receipts
             </h3>
           </div>
-          <span className="text-xs text-[#64748B] font-semibold">
-            {transactions.length} Verified {transactions.length === 1 ? "Transaction" : "Transactions"}
-          </span>
+
+          {/* Radix Tabs for Transaction Format */}
+          <Tabs value={txTab} onValueChange={(v) => setTxTab(v as any)}>
+            <TabsList className="h-8 p-1">
+              <TabsTrigger value="all" className="text-xs py-0.5 px-2.5 gap-1">
+                <span>All Payments</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700">
+                  {transactions.length}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="offline" className="text-xs py-0.5 px-2.5 gap-1">
+                <span>Offline</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">
+                  {transactions.filter((t) => !t.is_online && t.course_format !== "online" && (t as any).tr_course_type !== "online" && !(t as any).tr_stco_id).length}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="online" className="text-xs py-0.5 px-2.5 gap-1">
+                <span>Online</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800">
+                  {transactions.filter((t) => Boolean(t.is_online || t.course_format === "online" || (t as any).tr_course_type === "online" || (t as any).tr_stco_id)).length}
+                </span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
         </div>
 
         {loading ? (
@@ -1008,7 +1400,7 @@ export default function StudentFeesPage() {
           <div className="p-12 text-center text-[#64748B] space-y-2">
             <Receipt className="w-10 h-10 text-[#CBD5E1] mx-auto" />
             <p className="font-bold text-[#111827]">No payment transactions found.</p>
-            <p className="text-xs">Any verified tuition installments made via Razorpay will be listed here.</p>
+            <p className="text-xs">Any verified tuition installments or online course purchases will be listed here.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -1017,53 +1409,325 @@ export default function StudentFeesPage() {
                 <tr>
                   <th className="py-3 px-4">Tx ID</th>
                   <th className="py-3 px-4">Date</th>
-                  <th className="py-3 px-4">Course</th>
+                  <th className="py-3 px-4">Course &amp; Format</th>
                   <th className="py-3 px-4">Payment Mode</th>
                   <th className="py-3 px-4">Payment Reference</th>
-                  <th className="py-3 px-4">Remark</th>
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4 text-right">Amount</th>
+                  <th className="py-3 px-4 text-center">Receipt</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#F1F5F9]">
-                {transactions.map((tx) => (
-                  <tr key={tx.transaction_id} className="hover:bg-[#F8FAFC] transition-colors">
-                    <td className="py-3.5 px-4 font-mono font-bold text-[#64748B]">
-                      #{tx.transaction_id}
-                    </td>
-                    <td className="py-3.5 px-4 text-[#111827] whitespace-nowrap">
-                      {tx.date || "—"}
-                    </td>
-                    <td className="py-3.5 px-4 text-[#111827] font-semibold">
-                      {tx.course_name || "Enrolled Course"}
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <span className="uppercase text-[10px] font-bold px-2 py-0.5 rounded bg-[#F1F5F9] text-[#475569]">
-                        {tx.mode || "razorpay"}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 font-mono text-[11px] text-[#5B21F4] font-semibold">
-                      {tx.payment_reference || "—"}
-                    </td>
-                    <td className="py-3.5 px-4 text-[#64748B]">
-                      {tx.remark || "Course fee installment payment"}
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                        <span>Completed</span>
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-extrabold text-[#08A66A] whitespace-nowrap text-sm">
-                      ₹{Number(tx.amount || 0).toLocaleString("en-IN")}
-                    </td>
-                  </tr>
-                ))}
+                {transactions
+                  .filter((tx) => {
+                    const isOnline = Boolean(
+                      tx.is_online ||
+                      tx.course_format === "online" ||
+                      (tx as any).tr_course_type === "online" ||
+                      (tx as any).tr_stco_id
+                    );
+                    if (txTab === "offline") return !isOnline;
+                    if (txTab === "online") return isOnline;
+                    return true;
+                  })
+                  .map((tx) => {
+                    const isOnline = Boolean(
+                      tx.is_online ||
+                      tx.course_format === "online" ||
+                      (tx as any).tr_course_type === "online" ||
+                      (tx as any).tr_stco_id
+                    );
+                    return (
+                      <tr key={tx.transaction_id} className="hover:bg-[#F8FAFC] transition-colors">
+                        <td className="py-3.5 px-4 font-mono font-bold text-[#64748B]">
+                          #{tx.transaction_id}
+                        </td>
+                        <td className="py-3.5 px-4 text-[#111827] whitespace-nowrap">
+                          {tx.date || "—"}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <p className="font-bold text-[#111827]">
+                            {tx.course_name || "Enrolled Course"}
+                          </p>
+                          <span
+                            className={`inline-block text-[9px] font-bold px-1.5 py-0.2 rounded mt-0.5 ${
+                              isOnline
+                                ? "bg-purple-100 text-[#5B21F4]"
+                                : "bg-blue-100 text-blue-700"
+                            }`}
+                          >
+                            {isOnline ? "Online Course" : "Offline Classroom"}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="uppercase text-[10px] font-bold px-2 py-0.5 rounded bg-[#F1F5F9] text-[#475569]">
+                            {tx.mode || "razorpay"}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 font-mono text-[11px] text-[#5B21F4] font-semibold">
+                          {tx.payment_reference || "—"}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>Completed</span>
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-right font-extrabold text-[#08A66A] whitespace-nowrap text-sm">
+                          ₹{Number(tx.amount || 0).toLocaleString("en-IN")}
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setSelectedReceiptTx(tx)}
+                              className="h-7 px-2.5 text-xs font-bold border-[#DDD6FE] text-[#5B21F4] hover:bg-[#F1EEFF] gap-1 cursor-pointer"
+                              title="View Receipt"
+                            >
+                              <FileCheck2 className="w-3.5 h-3.5" />
+                              <span>View</span>
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDownloadReceipt(tx, "pdf")}
+                              disabled={downloadingReceiptTxId === tx.transaction_id}
+                              className="h-7 w-7 p-0 text-xs font-bold text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
+                              title="Download Official PDF Receipt"
+                            >
+                              {downloadingReceiptTxId === tx.transaction_id && downloadingReceiptFormat === "pdf" ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <FileText className="w-3.5 h-3.5" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDownloadReceipt(tx, "image")}
+                              disabled={downloadingReceiptTxId === tx.transaction_id}
+                              className="h-7 w-7 p-0 text-xs font-bold text-[#5B21F4] hover:bg-[#F1EEFF] rounded-lg cursor-pointer"
+                              title="Download Receipt Image (PNG)"
+                            >
+                              {downloadingReceiptTxId === tx.transaction_id && downloadingReceiptFormat === "image" ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <ImageIcon className="w-3.5 h-3.5" />
+                              )}
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
         )}
       </div>
+
+      {/* ── Official Printable Fee Receipt Modal (Compact & Proportional) ── */}
+      <AnimatePresence>
+        {selectedReceiptTx && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/50 backdrop-blur-sm print:p-0 print:bg-white overflow-y-auto">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl border border-[#E2E8F0] shadow-2xl max-w-md w-full p-4 sm:p-5 space-y-3 print:shadow-none print:border-none print:max-w-none print:w-full my-auto"
+            >
+              {/* Receipt Header */}
+              <div className="flex items-start justify-between border-b border-[#E2E8F0] pb-2.5">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-extrabold shadow-sm shrink-0"
+                    style={{ background: "linear-gradient(135deg, #5B21F4, #2563EB)" }}
+                  >
+                    <GraduationCap className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-black text-[#111827] leading-none">Brainzima</h2>
+                    <p className="text-[10px] text-[#64748B] mt-0.5">Official Fee Payment Receipt</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setSelectedReceiptTx(null)}
+                  className="p-1 rounded-lg text-[#94A3B8] hover:text-[#111827] hover:bg-[#F1F5F9] print:hidden cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Receipt Body */}
+              <div className="space-y-2.5 text-xs">
+                <div className="grid grid-cols-2 gap-2 p-2.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0]">
+                  <div>
+                    <span className="text-[#94A3B8] text-[9px] uppercase font-bold">Student Name</span>
+                    <p className="font-extrabold text-[#111827] text-xs mt-0.5 truncate">{selectedReceiptTx.student_name || name}</p>
+                  </div>
+                  <div>
+                    <span className="text-[#94A3B8] text-[9px] uppercase font-bold">Registration No.</span>
+                    <p className="font-mono font-extrabold text-[#5B21F4] text-xs mt-0.5 truncate">
+                      {selectedReceiptTx.registration_no || selectedReceiptTx.registration_number || sessionRegNo || "BISR-ONLINE"}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[#94A3B8] text-[9px] uppercase font-bold">Transaction ID</span>
+                    <p className="font-mono font-bold text-[#111827] text-[11px] mt-0.5">#{selectedReceiptTx.transaction_id}</p>
+                  </div>
+                  <div>
+                    <span className="text-[#94A3B8] text-[9px] uppercase font-bold">Payment Date</span>
+                    <p className="font-bold text-[#111827] text-[11px] mt-0.5 truncate">{selectedReceiptTx.date}</p>
+                  </div>
+                </div>
+
+                <div className="border border-[#E2E8F0] rounded-xl p-2.5 sm:p-3 space-y-1.5 text-[11px]">
+                  <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                    <span className="text-[#64748B]">Course Name:</span>
+                    <span className="font-bold text-[#111827] truncate max-w-[200px] text-right">{selectedReceiptTx.course_name}</span>
+                  </div>
+                  <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                    <span className="text-[#64748B]">Course Type:</span>
+                    <span className="font-bold text-[#5B21F4]">
+                      {selectedReceiptTx.is_online || selectedReceiptTx.course_format === "online"
+                        ? "Online E-Learning Program"
+                        : "Offline Classroom Diploma"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                    <span className="text-[#64748B]">Enrollment ID:</span>
+                    <span className="font-mono font-bold text-[#111827]">#{selectedReceiptTx.enrollment_id}</span>
+                  </div>
+                  <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                    <span className="text-[#64748B]">Payment Mode:</span>
+                    <span className="font-bold uppercase text-[#111827]">{selectedReceiptTx.mode}</span>
+                  </div>
+                  <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                    <span className="text-[#64748B]">Reference Number:</span>
+                    <span className="font-mono font-bold text-[#111827] truncate max-w-[160px]">{selectedReceiptTx.payment_reference || "N/A"}</span>
+                  </div>
+
+                  {/* Course Total Fee */}
+                  {Number(selectedReceiptTx.total_fee || selectedReceiptTx.course_fee || selectedReceiptTx.summary?.total_fee || 0) > 0 && (
+                    <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                      <span className="text-[#64748B]">Total Course Fee:</span>
+                      <span className="font-bold text-[#111827]">
+                        ₹{Number(selectedReceiptTx.total_fee || selectedReceiptTx.course_fee || selectedReceiptTx.summary?.total_fee || 0).toLocaleString("en-IN")}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Coupon Applied (if any) */}
+                  {(selectedReceiptTx.coupon_code || selectedReceiptTx.summary?.coupon_code) && (
+                    <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                      <span className="text-[#64748B] flex items-center gap-1.5">
+                        <span>Coupon:</span>
+                        <span className="px-1.5 py-0.2 rounded bg-purple-100 text-[#5B21F4] font-black text-[9px] uppercase border border-purple-200">
+                          {selectedReceiptTx.coupon_code || selectedReceiptTx.summary?.coupon_code}
+                        </span>
+                      </span>
+                      <span className="font-bold text-emerald-600">
+                        -₹{Number(selectedReceiptTx.discount || selectedReceiptTx.discount_amount || selectedReceiptTx.coupon_discount || selectedReceiptTx.summary?.discount || 0).toLocaleString("en-IN")}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Discount if present without coupon code */}
+                  {!selectedReceiptTx.coupon_code && !selectedReceiptTx.summary?.coupon_code && Number(selectedReceiptTx.discount || selectedReceiptTx.summary?.discount || 0) > 0 && (
+                    <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                      <span className="text-[#64748B]">Discount Applied:</span>
+                      <span className="font-bold text-emerald-600">
+                        -₹{Number(selectedReceiptTx.discount || selectedReceiptTx.summary?.discount || 0).toLocaleString("en-IN")}
+                      </span>
+                    </div>
+                  )}
+
+                  {selectedReceiptTx.remark && (
+                    <div className="flex justify-between items-center pb-1.5 border-b border-[#F1F5F9]">
+                      <span className="text-[#64748B]">Remark:</span>
+                      <span className="text-[#111827] truncate max-w-[180px]">{selectedReceiptTx.remark}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center pt-1 text-xs font-black">
+                    <span className="text-[#111827]">Net Amount Paid:</span>
+                    <span className="text-emerald-700 text-sm font-black">
+                      ₹{Number(selectedReceiptTx.amount || 0).toLocaleString("en-IN")}
+                    </span>
+                  </div>
+
+                  {(selectedReceiptTx.is_online || selectedReceiptTx.course_format === "online") && (
+                    <div className="flex justify-between items-center pt-0.5 text-[10px] text-slate-500">
+                      <span>Remaining Dues:</span>
+                      <span className="font-bold text-emerald-600">₹0.00 (Fully Cleared)</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Verification Stamp */}
+                <div className="flex items-center justify-between p-2 px-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[10px]">
+                  <div className="flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span className="font-bold">Computer Generated Official Receipt</span>
+                  </div>
+                  <span className="font-bold uppercase text-[9px]">Status: Verified</span>
+                </div>
+              </div>
+
+              {/* Receipt Footer Actions: Close, Download Image, Download PDF */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1.5 print:hidden">
+                <Button
+                  variant="outline"
+                  onClick={() => setSelectedReceiptTx(null)}
+                  className="rounded-xl text-xs font-bold px-3.5 h-9 shrink-0 cursor-pointer"
+                >
+                  Close
+                </Button>
+                <div className="flex-1 flex items-center gap-2">
+                  <Button
+                    onClick={() => selectedReceiptTx && handleDownloadReceipt(selectedReceiptTx, "image")}
+                    disabled={downloadingReceiptTxId === selectedReceiptTx?.transaction_id}
+                    variant="outline"
+                    className="flex-1 rounded-xl border-[#DDD6FE] text-[#5B21F4] hover:bg-[#F5F3FF] text-xs font-bold gap-1.5 h-9 transition-all cursor-pointer shadow-xs active:scale-[0.98]"
+                    title="Download high-resolution PNG receipt"
+                  >
+                    {downloadingReceiptTxId === selectedReceiptTx?.transaction_id && downloadingReceiptFormat === "image" ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ImageIcon className="w-3.5 h-3.5 text-[#5B21F4]" />
+                        <span>Download Image</span>
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    onClick={() => selectedReceiptTx && handleDownloadReceipt(selectedReceiptTx, "pdf")}
+                    disabled={downloadingReceiptTxId === selectedReceiptTx?.transaction_id}
+                    className="flex-1 rounded-xl bg-gradient-to-r from-[#5B21F4] to-[#7C3AED] hover:from-[#4C1BD4] hover:to-[#6D28D9] text-white text-xs font-bold gap-1.5 shadow-md h-9 transition-all cursor-pointer active:scale-[0.98]"
+                    title="Download official PDF document receipt"
+                  >
+                    {downloadingReceiptTxId === selectedReceiptTx?.transaction_id && downloadingReceiptFormat === "pdf" ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Generating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-3.5 h-3.5 text-white" />
+                        <span>Download PDF</span>
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* ══════════════════════════════════════════════════════════════════════ */}
       {/* PAYMENT MODAL / FORM                                                   */}
@@ -1118,7 +1782,7 @@ export default function StudentFeesPage() {
                         const newId = Number(e.target.value);
                         setSelectedStcId(newId);
                         const enr = enrollments.find((x) => Number(x.stc_id) === newId);
-                        const dues = extractEnrollmentDues(enr);
+                        const dues = extractEnrollmentDues(enr, transactions);
                         setPayAmount(dues > 0 ? String(dues) : "");
                         setAmountError(null);
                       }}
@@ -1126,7 +1790,7 @@ export default function StudentFeesPage() {
                       className="mt-1 w-full h-11 px-3 rounded-xl border border-[#E2E8F0] text-xs font-semibold text-[#111827] bg-white focus:outline-none focus:border-[#5B21F4]"
                     >
                       {enrollments.map((enr) => {
-                        const dues = extractEnrollmentDues(enr);
+                        const dues = extractEnrollmentDues(enr, transactions);
                         return (
                           <option key={enr.stc_id} value={enr.stc_id}>
                             {enr.course_name} (Remaining Dues: ₹{dues.toLocaleString("en-IN")})

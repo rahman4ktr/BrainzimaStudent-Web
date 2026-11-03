@@ -5,26 +5,21 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText,
   Upload,
-  CheckCircle2,
   AlertCircle,
   FileCheck2,
   ShieldCheck,
   User,
   CreditCard,
   GraduationCap,
-  Save,
   Loader2,
   ExternalLink,
-  FolderOpen,
   Eye,
   Download,
   X,
-  FileBadge,
-  Sparkles,
   Camera,
   Check,
-  ChevronDown,
-  ChevronUp,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { useStudent } from "@/hooks/useStudent";
 import {
@@ -36,11 +31,16 @@ import {
 } from "@/lib/api";
 import { getFileUrl, updateSession } from "@/lib/session";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+  DialogClose,
+} from "@/components/ui/dialog";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 16 },
@@ -70,8 +70,6 @@ export default function StudentDocumentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploadingDocId, setUploadingDocId] = useState<string | null>(null);
-  const [savingPaths, setSavingPaths] = useState(false);
-  const [showAdvancedPaths, setShowAdvancedPaths] = useState(false);
 
   // Document state from GET /api/document/student/{student_id}
   const [docs, setDocs] = useState<StudentDocumentsPaths | null>(null);
@@ -86,6 +84,7 @@ export default function StudentDocumentsPage() {
 
   // Lightbox preview modal state
   const [previewModal, setPreviewModal] = useState<PreviewDocModalState | null>(null);
+  const [zoomLevel, setZoomLevel] = useState<number>(1);
 
   // File input refs for uploading
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -173,23 +172,28 @@ export default function StudentDocumentsPage() {
       const newDbPath = returnedPath;
 
       // 2. Prepare payload to save in bi_st_docs via POST /api/document/student/{id}
+      const currentImage = docs?.docs_st_image || formPaths.image || user_image || studentProfile?.user_image || "";
+      const currentAadhFront = docs?.docs_st_aadhaar_front || formPaths.aadhaarFront || "";
+      const currentAadhBack = docs?.docs_st_aadhaar_back || formPaths.aadhaarBack || "";
+      const currentQualif = docs?.docs_st_qualification || formPaths.qualification || "";
+
       const updatedPaths = {
         docs_st_image:
           docType === "docs_st_image"
             ? newDbPath
-            : formPaths.image.trim() || undefined,
+            : currentImage.trim() || undefined,
         docs_st_aadhaar_front:
           docType === "docs_st_aadhaar_front"
             ? newDbPath
-            : formPaths.aadhaarFront.trim() || undefined,
+            : currentAadhFront.trim() || undefined,
         docs_st_aadhaar_back:
           docType === "docs_st_aadhaar_back"
             ? newDbPath
-            : formPaths.aadhaarBack.trim() || undefined,
+            : currentAadhBack.trim() || undefined,
         docs_st_qualification:
           docType === "docs_st_qualification"
             ? newDbPath
-            : formPaths.qualification.trim() || undefined,
+            : currentQualif.trim() || undefined,
       };
 
       const saveRes = await saveStudentDocuments(
@@ -238,45 +242,6 @@ export default function StudentDocumentsPage() {
       });
     } finally {
       setUploadingDocId(null);
-    }
-  };
-
-  // ── Manual Path Save Handler ──────────────────────────────────────────────
-  const handleSavePaths = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user_id || !effectiveStudentId) return;
-
-    setSavingPaths(true);
-    try {
-      const res = await saveStudentDocuments(user_id, effectiveStudentId, {
-        docs_st_image: formPaths.image.trim() || undefined,
-        docs_st_aadhaar_front: formPaths.aadhaarFront.trim() || undefined,
-        docs_st_aadhaar_back: formPaths.aadhaarBack.trim() || undefined,
-        docs_st_qualification: formPaths.qualification.trim() || undefined,
-      });
-
-      if (res.success) {
-        toast({
-          variant: "success",
-          title: "Paths Updated",
-          description: "Document paths updated successfully in database.",
-        });
-        await loadDocs();
-      } else {
-        toast({
-          variant: "error",
-          title: "Save Failed",
-          description: res.message || "Failed to update documents.",
-        });
-      }
-    } catch {
-      toast({
-        variant: "error",
-        title: "Network Error",
-        description: "Failed to connect to document server.",
-      });
-    } finally {
-      setSavingPaths(false);
     }
   };
 
@@ -356,40 +321,40 @@ export default function StudentDocumentsPage() {
   const completionPercent = Math.round((uploadedCount / totalCount) * 100);
 
   return (
-    <div className="p-4 md:p-6 lg:p-8 space-y-6 max-w-5xl mx-auto">
+    <div className="p-3 sm:p-5 md:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-5xl mx-auto">
       {/* ── Page Header ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <span className="w-2 h-2 rounded-full bg-[#5B21F4] animate-pulse" />
-            <span className="text-xs font-bold text-[#5B21F4] uppercase tracking-wider">
+            <span className="text-[11px] sm:text-xs font-bold text-[#5B21F4] uppercase tracking-wider">
               Verification Vault
             </span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-[#111827] tracking-tight">
+          <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold text-[#111827] tracking-tight">
             Student Documents
           </h1>
-          <p className="text-sm text-[#64748B] mt-0.5">
+          <p className="text-xs sm:text-sm text-[#64748B] mt-0.5">
             Verified academic dossier, student photograph, and government identity documents.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          {registration_number && (
-            <span className="px-3 py-1.5 rounded-xl bg-[#F1EEFF] text-[#5B21F4] font-mono text-xs font-bold border border-[#DDD6FE]">
+        {registration_number && (
+          <div className="self-start sm:self-auto">
+            <span className="px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-xl bg-[#F1EEFF] text-[#5B21F4] font-mono text-xs font-bold border border-[#DDD6FE]">
               {registration_number}
             </span>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* ── Error Banner ── */}
       {!loading && error && (
-        <div className="p-6 bg-red-50 border border-red-200 rounded-2xl text-center space-y-3">
-          <div className="w-10 h-10 rounded-full bg-red-100 text-red-600 flex items-center justify-center mx-auto">
+        <div className="p-4 sm:p-6 bg-red-50 border border-red-200 rounded-2xl text-center space-y-3">
+          <div className="w-9 h-9 rounded-full bg-red-100 text-red-600 flex items-center justify-center mx-auto">
             <AlertCircle className="w-5 h-5" />
           </div>
-          <p className="text-sm font-bold text-red-800">{error}</p>
+          <p className="text-xs sm:text-sm font-bold text-red-800">{error}</p>
           <button
             onClick={loadDocs}
             className="px-4 py-2 bg-red-600 text-white rounded-xl text-xs font-bold hover:bg-red-700 transition-colors cursor-pointer"
@@ -401,34 +366,34 @@ export default function StudentDocumentsPage() {
 
       {/* ── Summary Progress & Security Card ── */}
       <motion.div {...fadeUp(0.05)}>
-        <div className="p-5 md:p-6 rounded-2xl bg-white border border-[#E2E8F0] shadow-sm space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#5B21F4] to-[#2563EB] text-white flex items-center justify-center shadow-md shrink-0">
-                <ShieldCheck className="w-6 h-6" />
+        <div className="p-3.5 sm:p-5 rounded-2xl bg-white border border-[#E2E8F0] shadow-sm space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 sm:gap-3">
+              <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-br from-[#5B21F4] to-[#2563EB] text-white flex items-center justify-center shadow-sm shrink-0">
+                <ShieldCheck className="w-5 h-5" />
               </div>
-              <div>
-                <h3 className="text-base font-extrabold text-[#111827]">
+              <div className="min-w-0">
+                <h3 className="text-xs sm:text-sm font-extrabold text-[#111827] truncate">
                   Official Academic Vault
                 </h3>
-                <p className="text-xs text-[#64748B]">
-                  Linked to Student ID #{effectiveStudentId || "—"} &bull; {name || "Student"}
+                <p className="text-[10px] sm:text-xs text-[#64748B] truncate">
+                  {name || "Student"} &bull; ID #{effectiveStudentId || "—"}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <div className="text-right">
-                <p className="text-xs font-bold text-[#64748B] uppercase tracking-wider">
-                  Dossier Status
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="hidden sm:block text-right">
+                <p className="text-[10px] font-bold text-[#64748B] uppercase tracking-wider">
+                  Dossier
                 </p>
-                <p className="text-sm font-extrabold text-[#111827]">
-                  {uploadedCount} of {totalCount} Uploaded
+                <p className="text-xs font-extrabold text-[#111827]">
+                  {uploadedCount} / {totalCount} Done
                 </p>
               </div>
               <Badge
                 variant={uploadedCount === totalCount ? "success" : "outline"}
-                className="text-xs font-bold px-3 py-1.5"
+                className="text-[10px] sm:text-xs font-bold px-2.5 py-1"
               >
                 {uploadedCount === totalCount ? "Complete" : `${completionPercent}% Done`}
               </Badge>
@@ -436,7 +401,7 @@ export default function StudentDocumentsPage() {
           </div>
 
           {/* Progress Bar */}
-          <div className="w-full bg-[#F1F5F9] h-2.5 rounded-full overflow-hidden">
+          <div className="w-full bg-[#F1F5F9] h-2 rounded-full overflow-hidden">
             <div
               className="h-full bg-gradient-to-r from-[#5B21F4] to-[#08A66A] rounded-full transition-all duration-500"
               style={{ width: `${completionPercent}%` }}
@@ -445,33 +410,29 @@ export default function StudentDocumentsPage() {
         </div>
       </motion.div>
 
-      {/* ── Loading Skeletons ── */}
+      {/* ── Loading Skeletons (2 Columns on mobile & desktop) ── */}
       {loading && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-2 sm:gap-3.5 md:gap-4">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-white rounded-2xl border border-[#E2E8F0] p-5 space-y-4">
-              <div className="flex items-center gap-3">
-                <Skeleton className="w-12 h-12 rounded-xl" />
-                <div className="space-y-1.5 flex-1">
-                  <Skeleton className="h-5 w-40" />
-                  <Skeleton className="h-3 w-56" />
+            <div key={i} className="bg-white rounded-xl sm:rounded-2xl border border-[#E2E8F0] p-1.5 sm:p-3 space-y-1 sm:space-y-2">
+              <div className="flex items-center gap-1">
+                <Skeleton className="w-5 h-5 sm:w-7 sm:h-7 rounded-md sm:rounded-lg" />
+                <div className="space-y-1 flex-1">
+                  <Skeleton className="h-2 w-12 sm:w-20" />
                 </div>
               </div>
-              <Skeleton className="h-48 w-full rounded-xl" />
-              <div className="flex gap-2">
-                <Skeleton className="h-9 flex-1 rounded-xl" />
-                <Skeleton className="h-9 flex-1 rounded-xl" />
-              </div>
+              <Skeleton className="h-20 sm:h-32 w-full rounded-lg" />
+              <Skeleton className="h-6 sm:h-7.5 w-full rounded-md sm:rounded-lg" />
             </div>
           ))}
         </div>
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════ */}
-      {/* REAL DOCUMENTS SHOWN (Grid of 4 Document Cards)                        */}
+      {/* REAL DOCUMENTS SHOWN (Strictly 2 Columns: 1 row = 2 cols)              */}
       {/* ══════════════════════════════════════════════════════════════════════ */}
       {!loading && !error && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div className="grid grid-cols-2 gap-2 sm:gap-3.5 md:gap-4">
           {documentCards.map((doc, idx) => {
             const fileUrl = doc.path ? getFileUrl(doc.path) : null;
             const isUploading = uploadingDocId === doc.docType;
@@ -480,8 +441,8 @@ export default function StudentDocumentsPage() {
             return (
               <motion.div
                 key={doc.id}
-                {...fadeUp(0.08 + idx * 0.05)}
-                className="bg-white rounded-2xl border border-[#E2E8F0] p-5 space-y-4 shadow-sm hover:border-[#DDD6FE] transition-all flex flex-col justify-between"
+                {...fadeUp(0.04 + idx * 0.02)}
+                className="bg-white rounded-xl sm:rounded-2xl border border-[#E2E8F0] p-1.5 sm:p-3 flex flex-col justify-between shadow-xs hover:border-[#5B21F4]/40 hover:shadow-sm transition-all group"
               >
                 {/* Hidden File Input */}
                 <input
@@ -491,198 +452,154 @@ export default function StudentDocumentsPage() {
                   onChange={(e) => {
                     const f = e.target.files?.[0] || null;
                     if (f) handleFileUpload(f, doc.docType);
-                    // Reset input value so same file can be re-selected if needed
                     e.target.value = "";
                   }}
                   className="hidden"
                 />
 
-                {/* Card Header */}
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 shadow-sm"
-                      style={{ backgroundColor: doc.bg, color: doc.color }}
-                    >
-                      <doc.icon className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-[#F1F5F9] text-[#475569]">
-                          {doc.badge}
-                        </span>
-                        {doc.path ? (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                            <Check className="w-3 h-3" />
-                            Verified
-                          </span>
-                        ) : (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
-                            Pending Upload
-                          </span>
-                        )}
+                <div className="space-y-1 sm:space-y-1.5">
+                  {/* Top Header: Badge & Status */}
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <div
+                        className="w-4.5 h-4.5 sm:w-7 sm:h-7 rounded-md sm:rounded-lg flex items-center justify-center shrink-0 shadow-xs"
+                        style={{ backgroundColor: doc.bg, color: doc.color }}
+                      >
+                        <doc.icon className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />
                       </div>
-                      <h4 className="font-extrabold text-[#111827] text-sm mt-1">
-                        {doc.label}
-                      </h4>
+                      <span className="text-[7.5px] sm:text-[9px] font-bold uppercase tracking-wider px-1 py-0.2 rounded bg-[#F1F5F9] text-[#475569] truncate">
+                        {doc.badge}
+                      </span>
                     </div>
-                  </div>
-                </div>
 
-                <p className="text-xs text-[#64748B] leading-relaxed">
-                  {doc.sub}
-                </p>
-
-                {/* Document Display Preview Area */}
-                <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] overflow-hidden min-h-[180px] flex items-center justify-center relative group">
-                  {doc.path && fileUrl ? (
-                    isPdf ? (
-                      /* PDF Display */
-                      <div className="p-6 text-center space-y-3 w-full">
-                        <div className="w-16 h-16 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center mx-auto shadow-sm">
-                          <FileText className="w-8 h-8" />
-                        </div>
-                        <div>
-                          <p className="font-extrabold text-sm text-[#111827]">
-                            PDF Document
-                          </p>
-                          <p className="text-[11px] text-[#64748B] font-mono mt-0.5 break-all line-clamp-1 max-w-xs mx-auto">
-                            {doc.path.split("/").pop()}
-                          </p>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            setPreviewModal({
-                              title: doc.label,
-                              url: fileUrl,
-                              isPdf: true,
-                              pathString: doc.path || "",
-                            })
-                          }
-                          className="text-xs font-bold border-[#DDD6FE] text-[#5B21F4] hover:bg-[#F1EEFF] gap-1.5 cursor-pointer"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Preview Document</span>
-                        </Button>
-                      </div>
+                    {doc.path ? (
+                      <span className="text-[7px] sm:text-[9px] font-bold px-1 sm:px-1.5 py-0.2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-0.5 shrink-0">
+                        <Check className="w-1.5 h-1.5 sm:w-2 sm:h-2" />
+                        <span>Verified</span>
+                      </span>
                     ) : (
-                      /* Real Image Preview */
-                      <div className="relative w-full h-48 bg-[#F1F5F9] flex items-center justify-center overflow-hidden">
-                        <img
-                          src={fileUrl}
-                          alt={doc.label}
-                          className="w-full h-full object-contain p-2 transition-transform duration-300 group-hover:scale-105"
-                          onError={(e) => {
-                            // Fallback if image path does not resolve
-                            (e.currentTarget as HTMLElement).style.display = "none";
-                          }}
-                        />
-                        {/* Hover Overlay Button */}
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-2">
-                          <Button
-                            size="sm"
-                            onClick={() =>
-                              setPreviewModal({
-                                title: doc.label,
-                                url: fileUrl,
-                                isPdf: false,
-                                pathString: doc.path || "",
-                              })
-                            }
-                            className="bg-white text-[#111827] hover:bg-white/90 text-xs font-bold gap-1 shadow-md cursor-pointer"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                            <span>View Full</span>
-                          </Button>
-                          <a
-                            href={fileUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="bg-white/20 border-white text-white hover:bg-white/30 text-xs font-bold gap-1 cursor-pointer"
-                            >
-                              <ExternalLink className="w-3.5 h-3.5" />
-                            </Button>
-                          </a>
-                        </div>
-                      </div>
-                    )
-                  ) : (
-                    /* Not Uploaded Placeholder */
-                    <div className="p-8 text-center space-y-2">
-                      <div className="w-12 h-12 rounded-xl bg-[#E2E8F0] text-[#94A3B8] flex items-center justify-center mx-auto">
-                        <Camera className="w-6 h-6" />
-                      </div>
-                      <p className="text-xs font-bold text-[#64748B]">
-                        No file uploaded yet
-                      </p>
-                      <p className="text-[11px] text-[#94A3B8]">
-                        Click upload below to add this document
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Path Snippet */}
-                {doc.path && (
-                  <div className="px-3 py-1.5 rounded-lg bg-[#F8FAFC] border border-[#F1F5F9] flex items-center justify-between text-[11px]">
-                    <span className="text-[#94A3B8] font-medium">Path:</span>
-                    <span className="font-mono text-[#475569] truncate ml-2 max-w-[240px]">
-                      {doc.path}
-                    </span>
+                      <span className="text-[7px] sm:text-[9px] font-bold px-1 sm:px-1.5 py-0.2 rounded-full bg-amber-50 text-amber-700 border border-amber-200 shrink-0">
+                        Pending
+                      </span>
+                    )}
                   </div>
-                )}
 
-                {/* Card Action Buttons */}
-                <div className="flex items-center gap-2 pt-1">
-                  {doc.path && fileUrl && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
+                  {/* Document Title */}
+                  <div className="min-w-0">
+                    <h4 className="font-extrabold text-[#111827] text-[10px] sm:text-xs leading-tight truncate">
+                      {doc.label}
+                    </h4>
+                  </div>
+
+                  {/* Document Display Preview Area (Click to preview) */}
+                  <div
+                    onClick={() => {
+                      if (doc.path && fileUrl) {
+                        setZoomLevel(1);
                         setPreviewModal({
                           title: doc.label,
                           url: fileUrl,
                           isPdf: doc.isPdf,
                           pathString: doc.path || "",
-                        })
+                        });
                       }
-                      className="flex-1 rounded-xl text-xs font-bold h-10 border-[#DDD6FE] text-[#5B21F4] hover:bg-[#F1EEFF] gap-1.5 cursor-pointer"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>View</span>
-                    </Button>
-                  )}
-
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={isUploading}
-                    onClick={() => doc.inputRef.current?.click()}
-                    className={`flex-1 rounded-xl text-xs font-bold h-10 gap-1.5 cursor-pointer ${
-                      doc.path
-                        ? "bg-white border border-[#E2E8F0] text-[#475569] hover:border-[#5B21F4] hover:text-[#5B21F4]"
-                        : "bg-[#5B21F4] hover:bg-[#4C1BD4] text-white shadow-md shadow-[#5B21F4]/20"
+                    }}
+                    className={`rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] overflow-hidden h-20 sm:h-30 flex items-center justify-center relative cursor-pointer group-hover:border-[#5B21F4]/40 transition-all ${
+                      doc.path && fileUrl ? "hover:shadow-xs" : ""
                     }`}
                   >
-                    {isUploading ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Uploading...</span>
-                      </>
+                    {doc.path && fileUrl ? (
+                      isPdf ? (
+                        /* PDF Display */
+                        <div className="p-1 sm:p-2.5 text-center space-y-0.5 w-full">
+                          <div className="w-5 h-5 sm:w-8 sm:h-8 rounded-md sm:rounded-lg bg-red-100 text-red-600 flex items-center justify-center mx-auto shadow-xs">
+                            <FileText className="w-2.5 h-2.5 sm:w-4 sm:h-4" />
+                          </div>
+                          <div>
+                            <p className="font-extrabold text-[9px] sm:text-[11px] text-[#111827] truncate">
+                              PDF Ready
+                            </p>
+                          </div>
+                          <div className="inline-flex items-center gap-0.5 text-[7.5px] sm:text-[9px] font-bold text-[#5B21F4] bg-[#F1EEFF] px-1 py-0.2 rounded">
+                            <Eye className="w-2 h-2 sm:w-2.5 sm:h-2.5" />
+                            <span>View</span>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Real Image Preview */
+                        <div className="relative w-full h-full bg-[#0F172A]/5 flex items-center justify-center overflow-hidden">
+                          <img
+                            src={fileUrl}
+                            alt={doc.label}
+                            className="w-full h-full object-contain p-0.5 transition-transform duration-300 group-hover:scale-105"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = "none";
+                            }}
+                          />
+                          {/* Hover Overlay Button */}
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-1">
+                            <div className="bg-white/95 text-[#111827] px-1.5 py-0.5 rounded text-[8px] sm:text-[10px] font-bold flex items-center gap-0.5 shadow-xs">
+                              <Eye className="w-2 h-2 sm:w-2.5 sm:h-2.5 text-[#5B21F4]" />
+                              <span>View</span>
+                            </div>
+                          </div>
+                        </div>
+                      )
                     ) : (
-                      <>
-                        <Upload className="w-3.5 h-3.5" />
-                        <span>{doc.path ? "Replace File" : "Upload File"}</span>
-                      </>
+                      /* Not Uploaded Placeholder */
+                      <div className="p-1 text-center space-y-0.5">
+                        <div className="w-4 h-4 sm:w-7 sm:h-7 rounded-md bg-[#E2E8F0] text-[#94A3B8] flex items-center justify-center mx-auto">
+                          <Camera className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />
+                        </div>
+                        <p className="text-[8px] sm:text-[10px] font-bold text-[#64748B]">
+                          No file yet
+                        </p>
+                      </div>
                     )}
-                  </Button>
+                  </div>
+                </div>
+
+                {/* Card Action Button: Only View if uploaded, or Upload if not yet added. NO REPLACE BUTTON! */}
+                <div className="pt-1 sm:pt-1.5">
+                  {doc.path && fileUrl ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => {
+                        setZoomLevel(1);
+                        setPreviewModal({
+                          title: doc.label,
+                          url: fileUrl,
+                          isPdf: doc.isPdf,
+                          pathString: doc.path || "",
+                        });
+                      }}
+                      className="w-full rounded-md sm:rounded-lg text-[8.5px] sm:text-[11px] font-bold h-6 sm:h-7.5 bg-[#5B21F4] hover:bg-[#4C1BD4] text-white shadow-xs flex items-center justify-center gap-1 cursor-pointer transition-all"
+                    >
+                      <Eye className="w-2 h-2 sm:w-3 sm:h-3" />
+                      <span>View</span>
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isUploading}
+                      onClick={() => doc.inputRef.current?.click()}
+                      className="w-full rounded-md sm:rounded-lg text-[8.5px] sm:text-[11px] font-bold h-6 sm:h-7.5 bg-[#5B21F4] hover:bg-[#4C1BD4] text-white shadow-xs flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      {isUploading ? (
+                        <>
+                          <Loader2 className="w-2 h-2 sm:w-3 sm:h-3 animate-spin" />
+                          <span>Uploading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-2 h-2 sm:w-3 sm:h-3" />
+                          <span>Upload</span>
+                        </>
+                      )}
+                    </Button>
+                  )}
                 </div>
               </motion.div>
             );
@@ -691,221 +608,178 @@ export default function StudentDocumentsPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════ */}
-      {/* ADVANCED: Direct Database Path Strings Form (Collapsible)              */}
+      {/* RADIX UI DIALOG: ACCESSIBLE, COMPACT & RESPONSIVE LIGHTBOX MODAL     */}
       {/* ══════════════════════════════════════════════════════════════════════ */}
-      <div className="pt-4 border-t border-[#E2E8F0]">
-        <button
-          type="button"
-          onClick={() => setShowAdvancedPaths((p) => !p)}
-          className="flex items-center justify-between w-full p-4 rounded-2xl bg-white border border-[#E2E8F0] text-xs font-bold text-[#475569] hover:text-[#111827] transition-colors cursor-pointer"
+      <Dialog
+        open={Boolean(previewModal)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPreviewModal(null);
+            setZoomLevel(1);
+          }
+        }}
+      >
+        <DialogContent
+          hideCloseButton
+          className="w-[84vw] max-w-[310px] sm:max-w-md p-2 sm:p-3.5 rounded-xl sm:rounded-2xl border border-[#E2E8F0] shadow-2xl flex flex-col max-h-[82vh] space-y-1 sm:space-y-2 overflow-hidden bg-white"
         >
-          <div className="flex items-center gap-2">
-            <FileBadge className="w-4 h-4 text-[#5B21F4]" />
-            <span>Developer / Auditor Path Overrides (Advanced)</span>
-          </div>
-          {showAdvancedPaths ? (
-            <ChevronUp className="w-4 h-4 text-[#94A3B8]" />
-          ) : (
-            <ChevronDown className="w-4 h-4 text-[#94A3B8]" />
-          )}
-        </button>
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-[#F1F5F9] pb-1 sm:pb-1.5 gap-1">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <div className="w-5 h-5 sm:w-7 sm:h-7 rounded-md sm:rounded-lg bg-[#F1EEFF] text-[#5B21F4] flex items-center justify-center shrink-0 border border-[#DDD6FE]">
+                <FileCheck2 className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />
+              </div>
+              <div className="min-w-0">
+                <DialogTitle className="text-[11px] sm:text-sm font-extrabold text-[#111827] leading-tight truncate">
+                  {previewModal?.title}
+                </DialogTitle>
+                <DialogDescription className="sr-only">
+                  Preview of student verified document {previewModal?.title}
+                </DialogDescription>
+                <div className="flex items-center gap-1 text-[7.5px] sm:text-[9px] text-[#64748B] mt-0.5">
+                  <span className="font-mono text-[#5B21F4] font-bold truncate max-w-[80px] sm:max-w-none">
+                    {registration_number || `ST-${effectiveStudentId}`}
+                  </span>
+                  <span>&bull;</span>
+                  <span className="inline-flex items-center gap-0.5 text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded font-semibold text-[7px] sm:text-[8px] border border-emerald-200 shrink-0">
+                    <Check className="w-1.5 h-1.5 sm:w-2 sm:h-2" /> Verified
+                  </span>
+                </div>
+              </div>
+            </div>
 
-        <AnimatePresence>
-          {showAdvancedPaths && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="mt-3 overflow-hidden"
-            >
-              <form
-                onSubmit={handleSavePaths}
-                className="bg-white rounded-2xl border border-[#E2E8F0] p-6 space-y-4 shadow-sm"
+            {/* Toolbar */}
+            <div className="flex items-center gap-0.5 shrink-0">
+              {/* Zoom controls for images */}
+              {!previewModal?.isPdf && (
+                <div className="flex items-center bg-[#F8FAFC] border border-[#E2E8F0] rounded-md sm:rounded-lg p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setZoomLevel((z) => Math.max(1, Math.round((z - 0.25) * 100) / 100))}
+                    disabled={zoomLevel <= 1}
+                    className="p-0.5 rounded text-[#64748B] hover:text-[#111827] disabled:opacity-30 transition-colors cursor-pointer"
+                    title="Zoom out"
+                  >
+                    <ZoomOut className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setZoomLevel(1)}
+                    className="px-0.5 sm:px-1 text-[8px] sm:text-[9px] font-mono font-bold text-[#475569] hover:text-[#5B21F4]"
+                    title="Reset zoom"
+                  >
+                    {Math.round(zoomLevel * 100)}%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setZoomLevel((z) => Math.min(2.5, Math.round((z + 0.25) * 100) / 100))}
+                    disabled={zoomLevel >= 2.5}
+                    className="p-0.5 rounded text-[#64748B] hover:text-[#111827] disabled:opacity-30 transition-colors cursor-pointer"
+                    title="Zoom in"
+                  >
+                    <ZoomIn className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                  </button>
+                </div>
+              )}
+
+              {/* Download */}
+              <a
+                href={previewModal?.url}
+                download
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-0.5 sm:p-1 rounded-md sm:rounded-lg text-[#64748B] hover:text-[#5B21F4] hover:bg-[#F1EEFF] transition-colors cursor-pointer"
+                title="Download document"
               >
+                <Download className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              </a>
+
+             
+              {/* Close */}
+              <DialogClose className="p-0.5 sm:p-1 rounded-md sm:rounded-lg text-[#94A3B8] hover:text-[#111827] hover:bg-[#F1F5F9] transition-colors cursor-pointer">
+                <X className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              </DialogClose>
+            </div>
+          </div>
+
+          {/* Modal Body / Viewer */}
+          <div className="flex-1 overflow-auto bg-[#0B0F19] rounded-lg sm:rounded-xl border border-[#1E293B] p-1 sm:p-2 flex items-center justify-center min-h-[100px] sm:min-h-[160px] max-h-[26vh] sm:max-h-[38vh] shadow-inner relative">
+            {previewModal?.isPdf ? (
+              <div className="w-full h-full flex flex-col items-center justify-center p-2 text-center space-y-1 bg-[#111827] rounded-md sm:rounded-lg">
+                <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-red-500/15 text-red-400 border border-red-500/30 flex items-center justify-center">
+                  <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                </div>
                 <div>
-                  <h4 className="font-extrabold text-sm text-[#111827]">
-                    Raw Database Path Strings (bi_st_docs)
+                  <h4 className="font-bold text-white text-[11px] sm:text-xs">
+                    PDF Document Ready
                   </h4>
-                  <p className="text-xs text-[#64748B] mt-0.5">
-                    Directly view or update stored relative paths. Pure string path storage rule is strictly preserved.
+                  <p className="text-[8px] sm:text-[9px] text-white/60 font-mono mt-0.5 truncate max-w-[160px] mx-auto">
+                    {previewModal.pathString.split("/").pop()}
                   </p>
                 </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                  <div>
-                    <Label className="font-bold text-[#111827]">docs_st_image</Label>
-                    <Input
-                      type="text"
-                      value={formPaths.image}
-                      onChange={(e) => setFormPaths((p) => ({ ...p, image: e.target.value }))}
-                      placeholder="public/uploads/students/.../profile.webp"
-                      className="mt-1 font-mono text-xs h-10 rounded-xl"
-                    />
-                  </div>
-                  <div>
-                    <Label className="font-bold text-[#111827]">docs_st_aadhaar_front</Label>
-                    <Input
-                      type="text"
-                      value={formPaths.aadhaarFront}
-                      onChange={(e) => setFormPaths((p) => ({ ...p, aadhaarFront: e.target.value }))}
-                      placeholder="public/uploads/students/.../aadhaar-front.webp"
-                      className="mt-1 font-mono text-xs h-10 rounded-xl"
-                    />
-                  </div>
-                  <div>
-                    <Label className="font-bold text-[#111827]">docs_st_aadhaar_back</Label>
-                    <Input
-                      type="text"
-                      value={formPaths.aadhaarBack}
-                      onChange={(e) => setFormPaths((p) => ({ ...p, aadhaarBack: e.target.value }))}
-                      placeholder="public/uploads/students/.../aadhaar-back.webp"
-                      className="mt-1 font-mono text-xs h-10 rounded-xl"
-                    />
-                  </div>
-                  <div>
-                    <Label className="font-bold text-[#111827]">docs_st_qualification</Label>
-                    <Input
-                      type="text"
-                      value={formPaths.qualification}
-                      onChange={(e) => setFormPaths((p) => ({ ...p, qualification: e.target.value }))}
-                      placeholder="public/uploads/students/.../qualification.pdf"
-                      className="mt-1 font-mono text-xs h-10 rounded-xl"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-2">
-                  <Button
-                    type="submit"
-                    disabled={savingPaths}
-                    className="bg-[#5B21F4] hover:bg-[#4C1BD4] text-white text-xs font-bold rounded-xl h-10 px-5 shadow-sm gap-2 cursor-pointer"
-                  >
-                    {savingPaths ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Updating Paths...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Save className="w-3.5 h-3.5" />
-                        <span>Save Paths to Database</span>
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </form>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      {/* ══════════════════════════════════════════════════════════════════════ */}
-      {/* INTERACTIVE DOCUMENT LIGHTBOX / PREVIEW MODAL                         */}
-      {/* ══════════════════════════════════════════════════════════════════════ */}
-      <AnimatePresence>
-        {previewModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-2xl border border-[#E2E8F0] shadow-2xl max-w-3xl w-full p-5 sm:p-6 space-y-4 overflow-hidden flex flex-col max-h-[90vh]"
-            >
-              {/* Modal Header */}
-              <div className="flex items-center justify-between border-b border-[#F1F5F9] pb-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-[#F1EEFF] text-[#5B21F4] flex items-center justify-center shrink-0">
-                    <FileCheck2 className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-extrabold text-[#111827] text-base leading-none">
-                      {previewModal.title}
-                    </h3>
-                    <p className="text-[11px] text-[#64748B] mt-0.5">
-                      Student: {name || "Student"} &bull; {registration_number || `ST-${effectiveStudentId}`}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 pt-0.5 flex-wrap justify-center">
                   <a
                     href={previewModal.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    download
-                    className="p-2 rounded-xl text-[#475569] hover:bg-[#F1F5F9] hover:text-[#5B21F4] transition-colors"
-                    title="Open Original in New Tab"
                   >
-                    <ExternalLink className="w-4 h-4" />
+                    <Button
+                      size="sm"
+                      className="bg-[#5B21F4] hover:bg-[#4C1BD4] text-white text-[9px] sm:text-[10px] font-bold rounded-md sm:rounded-lg h-5.5 sm:h-6.5 px-2 gap-1 shadow-xs cursor-pointer"
+                    >
+                      <ExternalLink className="w-2 h-2 sm:w-2.5 sm:h-2.5" />
+                      <span>View PDF</span>
+                    </Button>
                   </a>
-                  <button
-                    type="button"
-                    onClick={() => setPreviewModal(null)}
-                    className="p-2 rounded-xl text-[#94A3B8] hover:text-[#111827] hover:bg-[#F1F5F9] cursor-pointer"
+                  <a
+                    href={previewModal.url}
+                    download
+                    target="_blank"
+                    rel="noopener noreferrer"
                   >
-                    <X className="w-5 h-5" />
-                  </button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="bg-white/10 hover:bg-white/20 text-white border-white/20 text-[9px] sm:text-[10px] font-bold rounded-md sm:rounded-lg h-5.5 sm:h-6.5 px-2 gap-1 cursor-pointer"
+                    >
+                      <Download className="w-2 h-2 sm:w-2.5 sm:h-2.5" />
+                      <span>Download</span>
+                    </Button>
+                  </a>
                 </div>
               </div>
-
-              {/* Modal Body / Viewer */}
-              <div className="flex-1 overflow-auto bg-[#F8FAFC] rounded-xl border border-[#E2E8F0] p-3 flex items-center justify-center min-h-[300px]">
-                {previewModal.isPdf ? (
-                  <div className="w-full h-[60vh] flex flex-col items-center justify-center p-6 space-y-4">
-                    <div className="w-16 h-16 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center shadow-inner">
-                      <FileText className="w-8 h-8" />
-                    </div>
-                    <div className="text-center space-y-1">
-                      <h4 className="font-black text-base text-[#111827]">
-                        PDF Document Preview
-                      </h4>
-                      <p className="text-xs text-[#64748B] font-mono break-all max-w-md">
-                        {previewModal.pathString}
-                      </p>
-                    </div>
-                    <div className="flex gap-3">
-                      <a
-                        href={previewModal.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        <Button className="bg-[#5B21F4] hover:bg-[#4C1BD4] text-white text-xs font-bold rounded-xl h-11 px-5 gap-2 shadow-md cursor-pointer">
-                          <ExternalLink className="w-4 h-4" />
-                          <span>Open PDF in Full Screen</span>
-                        </Button>
-                      </a>
-                    </div>
-                  </div>
-                ) : (
-                  <img
-                    src={previewModal.url}
-                    alt={previewModal.title}
-                    className="max-h-[65vh] w-auto max-w-full object-contain rounded-lg shadow-sm"
-                  />
-                )}
+            ) : (
+              <div className="w-full h-full flex items-center justify-center overflow-hidden">
+                <img
+                  src={previewModal?.url}
+                  alt={previewModal?.title}
+                  style={{
+                    transform: `scale(${zoomLevel})`,
+                    transition: "transform 0.15s ease-out",
+                  }}
+                  className="max-h-[24vh] sm:max-h-[36vh] w-auto max-w-full object-contain rounded select-none origin-center"
+                />
               </div>
-
-              {/* Modal Footer */}
-              <div className="flex items-center justify-between text-xs pt-1 border-t border-[#F1F5F9]">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span className="font-bold text-emerald-800 text-[11px]">
-                    Official Verified Document Record
-                  </span>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPreviewModal(null)}
-                  className="rounded-xl text-xs font-bold cursor-pointer"
-                >
-                  Close
-                </Button>
-              </div>
-            </motion.div>
+            )}
           </div>
-        )}
-      </AnimatePresence>
+
+          {/* Modal Footer */}
+          <div className="flex items-center justify-between text-xs pt-1 border-t border-[#F1F5F9]">
+            <div className="flex items-center gap-1 text-emerald-700 font-bold text-[8px] sm:text-[9.5px]">
+              <ShieldCheck className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-emerald-600 shrink-0" />
+              <span className="truncate">Verified Vault Document</span>
+            </div>
+            <DialogClose asChild>
+              <Button
+                size="sm"
+                className="bg-[#F1F5F9] hover:bg-[#E2E8F0] text-[#1E293B] text-[9px] sm:text-[10.5px] font-bold rounded-md sm:rounded-lg h-5.5 sm:h-6.5 px-2 sm:px-2.5 cursor-pointer transition-colors"
+              >
+                Close
+              </Button>
+            </DialogClose>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

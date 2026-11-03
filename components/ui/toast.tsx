@@ -124,14 +124,14 @@ function ToastItem({ toast, dismiss }: { toast: Toast; dismiss: (id: string) => 
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, x: 60, scale: 0.95 }}
-      animate={{ opacity: 1, x: 0, scale: 1 }}
-      exit={{ opacity: 0, x: 60, scale: 0.95 }}
-      transition={{ type: "spring", stiffness: 380, damping: 32 }}
+      initial={{ opacity: 0, y: -24, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -24, scale: 0.95 }}
+      transition={{ type: "spring", stiffness: 400, damping: 30 }}
       className="w-full max-w-sm pointer-events-auto"
     >
       <div
-        className="flex items-start gap-3 rounded-2xl border p-4 shadow-lg shadow-black/8 backdrop-blur-sm"
+        className="flex items-start gap-3 rounded-2xl border p-4 shadow-xl shadow-black/10 backdrop-blur-md"
         style={{
           backgroundColor: config.bg,
           borderColor: config.borderColor,
@@ -206,7 +206,7 @@ function ToastViewport({
     <div
       aria-live="polite"
       aria-label="Notifications"
-      className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 items-end pointer-events-none"
+      className="fixed top-4 left-4 right-4 sm:left-auto sm:right-4 z-[9999] flex flex-col gap-2 items-end pointer-events-none max-w-sm sm:w-auto ml-auto"
     >
       <AnimatePresence mode="sync">
         {toasts.map((t) => (

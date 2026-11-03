@@ -15,6 +15,7 @@ import {
   type BrainzimaSession,
 } from "@/lib/session";
 import type { LoginData } from "@/lib/api";
+import { playLoginSound } from "@/lib/sound";
 
 interface AuthContextType {
   user: BrainzimaSession | null;
@@ -64,6 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     (data: LoginData | Partial<BrainzimaSession>) => {
       const newSession = saveSession(data as any);
       setUser(newSession);
+      playLoginSound();
       return newSession;
     },
     []

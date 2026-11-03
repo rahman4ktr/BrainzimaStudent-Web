@@ -29,7 +29,6 @@ const featuredCourses = [
   {
     id: 1,
     name: "MERN Full Stack Development",
-    instructor: "Rahul Sharma",
     duration: "6 Months",
     lectures: 120,
     rating: 4.9,
@@ -42,7 +41,6 @@ const featuredCourses = [
   {
     id: 2,
     name: "Python AI & Machine Learning",
-    instructor: "Priya Nair",
     duration: "4 Months",
     lectures: 90,
     rating: 4.8,
@@ -55,7 +53,6 @@ const featuredCourses = [
   {
     id: 3,
     name: "Cloud & DevOps Engineering",
-    instructor: "Vikram Mehta",
     duration: "5 Months",
     lectures: 100,
     rating: 4.7,
@@ -213,7 +210,6 @@ export default function UserDashboardPage() {
                               {course.tag}
                             </span>
                           </div>
-                          <p className="text-[11px] text-[#64748B] mt-0.5">by {course.instructor}</p>
                         </div>
                         <Link
                           href={getEnrollmentUrl(course.id)}

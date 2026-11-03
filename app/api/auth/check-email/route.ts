@@ -14,8 +14,9 @@ import {
 } from "@/lib/otpStore";
 
 const PHP_API =
+  process.env.API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "https://try.ajitdev.com/brainzima/student/api";
+  "https://api.brainzima.com/student/api";
 
 export async function GET(req: NextRequest) {
   try {

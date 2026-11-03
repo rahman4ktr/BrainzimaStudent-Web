@@ -104,7 +104,13 @@ export async function POST(req: NextRequest) {
       console.warn("[Enrollment] Duplicate check notice:", checkErr);
     }
 
-    // ── 1. Strictly verify Razorpay Payment Details ─────────────────────────
+    // ── 1. Determine Payment Method (Online Razorpay vs Center Payment) ────
+    const isCenterPayment = Boolean(
+      body.payment_method === "center" ||
+      body.payment_mode === "center" ||
+      body.mode === "center"
+    );
+
     const {
       razorpay_payment_id,
       razorpay_order_id,
@@ -113,106 +119,123 @@ export async function POST(req: NextRequest) {
       documents = {},
     } = body;
 
-    if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Payment was not completed. Verified Razorpay details are required.",
-        },
-        { status: 400 }
-      );
-    }
+    let verifiedAmountInRupees = 0;
+    let paymentRef = isCenterPayment ? "PAY_AT_CENTRE" : "";
+    const paymentMode = isCenterPayment ? "center" : "razorpay";
 
-    const rzpConfig = getCleanRazorpayConfig();
-    const { key_secret, key_id } = rzpConfig;
-
-    if (!rzpConfig.configured || !key_secret) {
-      console.error("[Enrollment Stage: PAYMENT_VERIFY] RAZORPAY_KEY_SECRET is not configured in environment.");
-      return NextResponse.json(
-        {
-          success: false,
-          stage: "PAYMENT_VERIFY",
-          message: "Payment gateway configuration missing on server.",
-        },
-        { status: 500 }
-      );
-    }
-
-    // 1A. Cryptographic HMAC-SHA256 signature verification
-    const expectedSignature = crypto
-      .createHmac("sha256", key_secret)
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest("hex");
-
-    if (expectedSignature !== razorpay_signature) {
-      console.error("[Enrollment] Razorpay signature verification mismatch:", {
-        expected: expectedSignature,
-        received: razorpay_signature,
-      });
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Payment verification failed. Please contact support.",
-        },
-        { status: 400 }
-      );
-    }
-
-    // 1B. Fetch payment record directly from Razorpay API to verify actual captured amount
-    const razorpay = new Razorpay({
-      key_id,
-      key_secret,
-    });
-
-    let paymentRecord: any;
-    try {
-      paymentRecord = await razorpay.payments.fetch(razorpay_payment_id);
-    } catch (rzpFetchErr: any) {
-      console.error("[Enrollment] Error fetching payment from Razorpay API:", rzpFetchErr);
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Payment verification failed. Could not verify payment with gateway.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (!paymentRecord || (paymentRecord.status !== "captured" && paymentRecord.status !== "authorized")) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Payment was not completed. Status is not confirmed.",
-        },
-        { status: 400 }
-      );
-    }
-
-    // If authorized but not captured, auto-capture
-    if (paymentRecord.status === "authorized") {
-      try {
-        await razorpay.payments.capture(
-          razorpay_payment_id,
-          paymentRecord.amount,
-          paymentRecord.currency || "INR"
+    if (!isCenterPayment) {
+      if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Payment was not completed. Verified Razorpay details are required.",
+          },
+          { status: 400 }
         );
-      } catch (capErr) {
-        console.warn("[Enrollment] Notice during auto-capture:", capErr);
       }
+
+      const rzpConfig = getCleanRazorpayConfig();
+      const { key_secret, key_id } = rzpConfig;
+
+      if (!rzpConfig.configured || !key_secret) {
+        console.error("[Enrollment Stage: PAYMENT_VERIFY] RAZORPAY_KEY_SECRET is not configured in environment.");
+        return NextResponse.json(
+          {
+            success: false,
+            stage: "PAYMENT_VERIFY",
+            message: "Payment gateway configuration missing on server.",
+          },
+          { status: 500 }
+        );
+      }
+
+      // 1A. Cryptographic HMAC-SHA256 signature verification
+      const expectedSignature = crypto
+        .createHmac("sha256", key_secret)
+        .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+        .digest("hex");
+
+      if (expectedSignature !== razorpay_signature) {
+        console.error("[Enrollment] Razorpay signature verification mismatch:", {
+          expected: expectedSignature,
+          received: razorpay_signature,
+        });
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Payment verification failed. Please contact support.",
+          },
+          { status: 400 }
+        );
+      }
+
+      // 1B. Fetch payment record directly from Razorpay API to verify actual captured amount
+      const razorpay = new Razorpay({
+        key_id,
+        key_secret,
+      });
+
+      let paymentRecord: any;
+      try {
+        paymentRecord = await razorpay.payments.fetch(razorpay_payment_id);
+      } catch (rzpFetchErr: any) {
+        console.error("[Enrollment] Error fetching payment from Razorpay API:", rzpFetchErr);
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Payment verification failed. Could not verify payment with gateway.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (!paymentRecord || (paymentRecord.status !== "captured" && paymentRecord.status !== "authorized")) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Payment was not completed. Status is not confirmed.",
+          },
+          { status: 400 }
+        );
+      }
+
+      // If authorized but not captured, auto-capture
+      if (paymentRecord.status === "authorized") {
+        try {
+          await razorpay.payments.capture(
+            razorpay_payment_id,
+            paymentRecord.amount,
+            paymentRecord.currency || "INR"
+          );
+        } catch (capErr) {
+          console.warn("[Enrollment] Notice during auto-capture:", capErr);
+        }
+      }
+
+      verifiedAmountInRupees = Number(paymentRecord.amount) / 100;
+      if (isNaN(verifiedAmountInRupees) || verifiedAmountInRupees <= 0) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Invalid payment amount detected from payment gateway.",
+          },
+          { status: 400 }
+        );
+      }
+      paymentRef = razorpay_payment_id;
     }
 
-    const verifiedAmountInRupees = Number(paymentRecord.amount) / 100;
-    if (isNaN(verifiedAmountInRupees) || verifiedAmountInRupees <= 0) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Invalid payment amount detected from payment gateway.",
-        },
-        { status: 400 }
-      );
-    }
+    // Extract user_image passed in enrollment body, admission, or documents
+    const userImageFromReq =
+      (body.user_image ||
+        admission.user_image ||
+        body.userImage ||
+        documents?.docs_st_image ||
+        "")
+        .toString()
+        .trim() || null;
 
-    // ── 2. Payment verified! Now execute backend enrollment transaction ─────
+    // ── 2. Execute backend enrollment transaction ─────────────────────────────
     // NOTE: Trailing slash is strictly required by the PHP router/Apache configuration
     const phpHeaders: Record<string, string> = {
       "Content-Type": "application/json",
@@ -224,6 +247,8 @@ export async function POST(req: NextRequest) {
       phpHeaders["X-Student-Id"] = String(studentIdFromBody);
     }
 
+    const refBy = (admission.st_referredby || body.referred_by || body.st_referredby || body.referredBy || "Online Website").trim();
+
     const phpRes = await fetch(`${PHP_API}/enrollment/`, {
       method: "POST",
       headers: phpHeaders,
@@ -232,10 +257,32 @@ export async function POST(req: NextRequest) {
         centre_id: centreId,
         batch_id: batchId,
         discount,
-        initial_payment: verifiedAmountInRupees,
-        mode: "razorpay",
-        payref: razorpay_payment_id,
-        remark: "Course enrollment payment",
+        initial_payment: isCenterPayment ? 0 : verifiedAmountInRupees,
+        mode: isCenterPayment ? "cash" : "razorpay",
+        payref: paymentRef,
+        remark: isCenterPayment
+          ? "Center Payment - Pay at Study Centre"
+          : "Course enrollment payment",
+        st_referredby: refBy,
+        referredby: refBy,
+        referred_by: refBy,
+        st_fname: admission.st_fname ? String(admission.st_fname).trim() : undefined,
+        st_mname: admission.st_mname ? String(admission.st_mname).trim() : undefined,
+        st_dob: admission.st_dob ? String(admission.st_dob).trim() : undefined,
+        st_gender: admission.st_gender ? String(admission.st_gender).trim() : undefined,
+        st_mobile_parent: admission.st_mobile_parent ? String(admission.st_mobile_parent).trim() : undefined,
+        st_aadhaar: admission.st_aadhaar ? String(admission.st_aadhaar).trim() : undefined,
+        st_address: admission.st_address ? String(admission.st_address).trim() : undefined,
+        st_state: admission.st_state ? String(admission.st_state).trim() : undefined,
+        st_city: admission.st_city ? String(admission.st_city).trim() : undefined,
+        st_pincode: admission.st_pincode ? String(admission.st_pincode).trim() : undefined,
+        st_qualification: admission.st_qualification ? String(admission.st_qualification).trim() : undefined,
+        qualification: admission.st_qualification ? String(admission.st_qualification).trim() : undefined,
+        st_centre_id: centreId,
+        name: body.name || undefined,
+        email: body.email || undefined,
+        mobile: body.mobile || undefined,
+        ...(userImageFromReq ? { user_image: userImageFromReq } : {}),
         ...(studentIdFromBody ? { student_id: studentIdFromBody } : {}),
       }),
     });
@@ -258,11 +305,18 @@ export async function POST(req: NextRequest) {
 
     const enrollmentData = phpData.data || {};
     const studentId = Number(enrollmentData.student_id || studentIdFromBody);
-    const regno = String(enrollmentData.registration_number || "");
+    // Registration Number Rule:
+    // 1. If Center Payment: Student ID IS generated, but Registration Number (BISR...) is NOT generated!
+    // 2. If Online/Paid: Registration Number matches student_id (e.g. student_id: 23 -> BISR0023, not row-counter BISR0003).
+    const regno = isCenterPayment
+      ? null
+      : studentId
+      ? `BISR${String(studentId).padStart(4, "0")}`
+      : String(enrollmentData.registration_number || "");
     const stcId = Number(enrollmentData.stc_id);
 
     // ── 3. Synchronize full admission information into bi_student (FIRST ENROLLMENT ONLY) ─
-    // Only update bi_student if actual personal admission details were entered by the user
+    // Only update bi_student if actual personal admission details or image were entered
     const hasPersonalAdmissionDetails = Boolean(
       admission.st_fname ||
       admission.st_mname ||
@@ -271,11 +325,18 @@ export async function POST(req: NextRequest) {
       admission.st_mobile_parent ||
       admission.st_aadhaar ||
       admission.st_address ||
-      admission.st_qualification
+      admission.st_qualification ||
+      admission.st_referredby ||
+      userImageFromReq
     );
 
     if (studentId && hasPersonalAdmissionDetails) {
-      const admissionFields: Record<string, any> = {};
+      const admissionFields: Record<string, any> = {
+        st_referredby: refBy,
+        referredby: refBy,
+        referred_by: refBy,
+        st_centre_id: centreId,
+      };
       if (admission.st_fname) admissionFields.st_fname = String(admission.st_fname).trim();
       if (admission.st_mname) admissionFields.st_mname = String(admission.st_mname).trim();
       if (admission.st_dob) admissionFields.st_dob = String(admission.st_dob).trim();
@@ -287,14 +348,16 @@ export async function POST(req: NextRequest) {
       if (admission.st_state) admissionFields.st_state = String(admission.st_state).trim();
       if (admission.st_city) admissionFields.st_city = String(admission.st_city).trim();
       if (admission.st_pincode) admissionFields.st_pincode = String(admission.st_pincode).trim();
-      if (admission.st_qualification)
+      if (admission.st_qualification) {
         admissionFields.st_qualification = String(admission.st_qualification).trim();
-      if (admission.st_referredby)
-        admissionFields.st_referredby = String(admission.st_referredby).trim();
-      admissionFields.st_centre_id = centreId;
+        admissionFields.qualification = String(admission.st_qualification).trim();
+      }
+      if (userImageFromReq) {
+        admissionFields.user_image = userImageFromReq;
+      }
 
       try {
-        await fetch(`${PHP_API}/student/${studentId}`, {
+        const patchRes = await fetch(`${PHP_API}/student/${studentId}`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
@@ -304,22 +367,40 @@ export async function POST(req: NextRequest) {
           },
           body: JSON.stringify(admissionFields),
         });
+        if (!patchRes.ok) {
+          await fetch(`${PHP_API}/student/${studentId}/`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              "X-User-Id": String(userId),
+              "X-User-Role": "student",
+            },
+            body: JSON.stringify(admissionFields),
+          });
+        }
       } catch (patchErr) {
         console.warn("[Enrollment Bridge] Notice syncing student admission details:", patchErr);
       }
     }
 
-    // ── 4. Save document path strings into bi_st_docs if provided (FIRST ENROLLMENT ONLY) ─
-    if (studentId && hasPersonalAdmissionDetails && documents && typeof documents === "object") {
+    // ── 4. Save document path strings into bi_st_docs if provided ─────────────
+    if (studentId && (documents || userImageFromReq)) {
       const cleanDocs: Record<string, string> = {};
-      for (const k of ["docs_st_image", "docs_st_aadhaar_front", "docs_st_aadhaar_back", "docs_st_qualification"] as const) {
-        const v = documents[k];
-        if (typeof v === "string") {
-          const t = v.trim();
-          if (t && t !== "undefined" && t !== "null" && t !== "[object Object]") {
-            cleanDocs[k] = t;
+      if (documents && typeof documents === "object") {
+        for (const k of ["docs_st_image", "docs_st_aadhaar_front", "docs_st_aadhaar_back", "docs_st_qualification"] as const) {
+          const v = documents[k];
+          if (typeof v === "string") {
+            const t = v.trim();
+            if (t && t !== "undefined" && t !== "null" && t !== "[object Object]") {
+              cleanDocs[k] = t;
+            }
           }
         }
+      }
+
+      if (userImageFromReq && !cleanDocs.docs_st_image) {
+        cleanDocs.docs_st_image = userImageFromReq;
       }
 
       if (Object.keys(cleanDocs).length > 0) {
@@ -377,18 +458,18 @@ export async function POST(req: NextRequest) {
         timeStyle: "short",
       });
 
-      if (studentEmail) {
+      if (studentEmail && !isCenterPayment) {
         const emailResult = await sendPaymentConfirmationEmail({
           to: studentEmail,
           student_name: userName,
-          registration_number: regno,
+          registration_number: regno || "",
           course_name: courseName,
           course_code: courseCode,
           stc_id: stcId,
           payment_type: "Initial Admission Payment",
           amount_paid: enrPaid,
           payment_mode: "Razorpay",
-          payref: razorpay_payment_id,
+          payref: paymentRef,
           tr_id: enrollmentData.tr_id || enrollmentData.transaction_id || undefined,
           total_fee: totalFee,
           discount: enrDiscount,
@@ -414,21 +495,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: true,
-        message: "Enrollment successful.",
+        message: isCenterPayment
+          ? "Admission registered successfully! Please visit your study centre to complete fee payment and activate your official Registration ID."
+          : "Enrollment successful.",
         data: {
           user_id: userId,
           student_id: studentId,
-          registration_number: regno,
+          registration_number: isCenterPayment ? null : regno,
           role: "student",
           is_student: true,
           course_id: courseId,
           stc_id: stcId,
-          amount_paid: verifiedAmountInRupees,
-          payment_mode: "razorpay",
-          payment_reference: razorpay_payment_id,
+          amount_paid: isCenterPayment ? 0 : verifiedAmountInRupees,
+          center_deposit_amount: isCenterPayment ? Number(body.center_deposit_amount || 0) : undefined,
+          center_balance_due: isCenterPayment ? Math.max(0, (enrollmentData.dues ?? Math.max(0, Number(enrollmentData.total_fee || 0) - discount)) - Number(body.center_deposit_amount || 0)) : undefined,
+          dues: isCenterPayment ? (enrollmentData.dues ?? Math.max(0, Number(enrollmentData.total_fee || 0) - discount)) : enrollmentData.dues,
+          payment_mode: isCenterPayment ? "center" : "razorpay",
+          payment_status: isCenterPayment ? "pending_center_payment" : "paid",
+          payment_reference: paymentRef,
           centre_id: centreId,
           email_sent: emailSent,
           email_recipient: studentEmail,
+          user_image: userImageFromReq || enrollmentData.user_image || null,
         },
       },
       { status: 201 }
@@ -533,12 +621,26 @@ export async function GET(req: NextRequest) {
             ? Number(e.summary.total_paid)
             : Math.max(initPayNum, totalFeeNum - discountNum - duesNum);
 
+        const computedDues = Math.max(0, totalFeeNum - discountNum - totalPaidNum);
+        const resolvedDues = duesNum > 0 ? Math.min(duesNum, computedDues) : computedDues;
+
+        const stId = Number(e.student_id ?? e.stc_st_id ?? e.st_id);
+        const hasPayment = totalPaidNum > 0 || initPayNum > 0;
+        // User Requirement:
+        // - If Center Payment & no payment made yet: registration number is NOT generated (null).
+        // - If student has paid: Registration number is derived from student_id: BISR${student_id} (e.g. BISR0023 for student 23).
+        const resolvedRegNo = hasPayment && stId
+          ? `BISR${String(stId).padStart(4, "0")}`
+          : hasPayment
+          ? (e.registration_number || e.st_regno || null)
+          : null;
+
         return {
           ...e,
           stc_id: Number(e.stc_id ?? e.id),
-          stc_dues: duesNum,
-          dues: duesNum,
-          remaining_dues: duesNum,
+          stc_dues: resolvedDues,
+          dues: resolvedDues,
+          remaining_dues: resolvedDues,
           stc_total_fee: totalFeeNum,
           total_fee: totalFeeNum,
           stc_discount: discountNum,
@@ -547,9 +649,11 @@ export async function GET(req: NextRequest) {
           initial_payment: initPayNum,
           total_paid: totalPaidNum,
           total_successful_paid: totalPaidNum,
+          registration_number: resolvedRegNo,
+          st_regno: resolvedRegNo,
           course_name: e.course_name || e.crs_name || "Enrolled Course",
           course_code: e.course_code || e.crs_code || "",
-          student_id: Number(e.student_id ?? e.stc_st_id ?? e.st_id),
+          student_id: stId,
         };
       };
 

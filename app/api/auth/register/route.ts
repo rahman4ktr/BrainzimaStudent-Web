@@ -17,18 +17,44 @@ import {
   getUserOtpState,
 } from "@/lib/otpStore";
 import {
+  toFullPublicUrl,
+  extractExtension,
   finalizeRegistrationImage,
   formatDbImagePath,
 } from "@/lib/imageStorage";
 import { getClientIp, getCurrentSqlDateTime } from "@/lib/utils";
 
 const PHP_API =
+  process.env.API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "https://try.ajitdev.com/brainzima/student/api";
+  "https://api.brainzima.com/student/api";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const contentType = req.headers.get("content-type") || "";
+    let body: any = {};
+    let uploadedFile: File | null = null;
+
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await req.formData();
+      const rawFile = (formData.get("user_image") || formData.get("file")) as File | null;
+      if (rawFile && typeof rawFile === "object" && typeof rawFile.arrayBuffer === "function") {
+        uploadedFile = rawFile;
+      }
+      body = {
+        name: formData.get("name")?.toString(),
+        email: formData.get("email")?.toString(),
+        mobile: formData.get("mobile")?.toString(),
+        password: formData.get("password")?.toString(),
+        user_image: typeof formData.get("user_image") === "string" ? formData.get("user_image")?.toString() : undefined,
+        user_role: formData.get("user_role")?.toString(),
+        role: formData.get("role")?.toString(),
+        ip: formData.get("ip")?.toString(),
+        last_login_ip: formData.get("last_login_ip")?.toString(),
+      };
+    } else {
+      body = await req.json().catch(() => ({}));
+    }
 
     const name = (body.name || "").trim();
     const rawEmail = (body.email || "").trim();
@@ -297,74 +323,59 @@ export async function POST(req: NextRequest) {
     const effectiveUserId = phpUserId ?? 10;
     let finalUserImage: string | null = null;
 
-    if (
+    if (uploadedFile && phpUserId) {
+      try {
+        const ext = extractExtension(uploadedFile.name || "");
+        const bytes = await uploadedFile.arrayBuffer();
+        const blob = new Blob([bytes], { type: uploadedFile.type || "image/jpeg" });
+        const phpImgForm = new FormData();
+        phpImgForm.append("user_image", blob, uploadedFile.name || `profile.${ext}`);
+
+        const phpImgRes = await fetch(`${PHP_API}/user/image`, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "X-User-Id": String(phpUserId),
+            "X-User-Role": role,
+          },
+          body: phpImgForm,
+        });
+
+        const imgJson = await phpImgRes.json().catch(() => null);
+        if (imgJson?.data?.user_image) {
+          finalUserImage = toFullPublicUrl(imgJson.data.user_image);
+        }
+      } catch (err) {
+        console.warn("[Register API] Notice uploading user_image to PHP:", err);
+      }
+    } else if (
       user_image &&
       user_image !== "null" &&
       user_image !== "undefined" &&
       user_image.trim() !== ""
     ) {
-      finalUserImage = await finalizeRegistrationImage(effectiveUserId, user_image, role);
-      if (finalUserImage) {
-        finalUserImage = formatDbImagePath(finalUserImage);
-      }
+      finalUserImage = toFullPublicUrl(user_image.trim());
+    }
 
-      // Synchronize final path and role with PHP MySQL database if user was created
-      if (finalUserImage && phpUserId) {
-        const syncPayload = {
-          user_role: role,
-          role,
-          user_image: finalUserImage,
-        };
-
-        // 1. Primary: Dedicated Avatar Path Update (POST /api/user/image per Section 8.2)
-        try {
-          await fetch(`${PHP_API}/user/image`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-User-Id": String(phpUserId),
-              "X-User-Role": role,
-              "X-HTTP-Method-Override": "PATCH",
-              Accept: "application/json",
-            },
-            body: JSON.stringify(syncPayload),
-          });
-        } catch (imgErr) {
-          console.warn("[Brainzima] Notice updating /user/image:", imgErr);
-        }
-
-        // 2. Secondary: Profile Update with Method Override (POST /api/user/profile)
-        try {
-          await fetch(`${PHP_API}/user/profile`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-User-Id": String(phpUserId),
-              "X-User-Role": role,
-              "X-HTTP-Method-Override": "PATCH",
-              Accept: "application/json",
-            },
-            body: JSON.stringify({ ...syncPayload, _method: "PATCH" }),
-          });
-        } catch (profErr) {
-          console.warn("[Brainzima] Notice updating /user/profile override:", profErr);
-        }
-
-        // 3. Fallback: Native PUT /api/user/profile
-        try {
-          await fetch(`${PHP_API}/user/profile`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              "X-User-Id": String(phpUserId),
-              "X-User-Role": role,
-              Accept: "application/json",
-            },
-            body: JSON.stringify(syncPayload),
-          });
-        } catch (putErr) {
-          console.warn("[Brainzima] Notice updating /user/profile PUT:", putErr);
-        }
+    // Synchronize full public URL string with PHP MySQL database
+    if (finalUserImage && phpUserId) {
+      try {
+        await fetch(`${PHP_API}/user/profile`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Id": String(phpUserId),
+            "X-User-Role": role,
+            "X-HTTP-Method-Override": "PATCH",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            user_image: finalUserImage,
+            _method: "PATCH",
+          }),
+        });
+      } catch (profErr) {
+        console.warn("[Brainzima] Notice updating /user/profile with full URL:", profErr);
       }
     }
 
